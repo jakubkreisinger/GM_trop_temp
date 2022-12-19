@@ -1,0 +1,75 @@
+################
+#DEMULTIPLEXING# 
+################
+
+#samples are demultiplexed and primers are trimmed using skewer software
+#each sequencing library (in fastq format) is in separete folder including also sequencing of all primers (+ barcodes) and matrix describing their combinations (details in skewer manual)
+#following steps are done separately for both runs
+
+
+cd /media/kreising/DATA/data/Ptaci_RUN_24.10.2016/Run41_CBGP_JFM/00.RAW.FASTQ/
+
+#DO THE SAME FOR ALL DISR
+for dir in ./*/
+do
+  cd $dir
+  
+  #path to adaptor and mapping file
+  ADAPT_PATH=$(echo $PWD/Adaptors.fasta)
+  MATRIX_PATH=$(echo $PWD/matrix.txt)
+
+  #[1]DEMULTIPLEXING
+  skewer -x $ADAPT_PATH -M $MATRIX_PATH -b -m head -d 0 -r 0.1 -k 45 -n -t 8 *L001_R1_001.fastq.gz *L001_R2_001.fastq.gz -o output
+
+  #[2]Adaptor trimming#############
+  SAMPLE_LIST=$(ls -1 *pair[12].fastq | sed "s/-pair[12].fastq//g" | sort | uniq)
+  for i in $SAMPLE_LIST ; do
+   
+    FASTQ1=$(ls -1 | sed "s/.fastq//g" | grep $i- | head -n 1)
+    FASTQ2=$(ls -1 | sed "s/.fastq//g" | grep $i- | tail -n 1)
+
+    FORWARD=$( echo $i | cut -f3 -d"-" | sed "s/R[0-9]*//g")
+    REV=$( echo $i | cut -f3 -d"-" | sed "s/F[0-9]*//g")
+
+    FORWARD_SEQ=$(grep -A 1 $FORWARD$ $ADAPT_PATH |tail -n 1) 
+    REV_SEQ=$(grep -A 1 $REV$ $ADAPT_PATH |tail -n 1)  
+    #cat FORWARD_SEQ REV_SEQ > FR
+    #cat FORWARD_SEQ REV_SEQ
+    OUTPUT=$(echo $i | sed "s/^/OUTPUT_/g")
+
+    echo "XXXXXXXXXXXXXXXXXXXXXXXXX"
+    echo $i
+    echo $FASTQ1
+    echo $FASTQ2
+    echo $FORWARD
+    echo $REV
+    echo $FORWARD_SEQ
+    echo $REV_SEQ
+   
+    TEST=$(echo $i | cut -f3 -d"-"| cut -c1)
+    VALUE=$(echo "R")
+    if [ "$TEST" == "$VALUE" ] ; then
+          skewer -x $REV_SEQ -y $FORWARD_SEQ -m head -d 0 -k 33 -t 8 $FASTQ1* $FASTQ2* -o $OUTPUT
+    else
+        skewer -x $FORWARD_SEQ -y  $REV_SEQ -m head -d 0 -k 33 -t 8 $FASTQ1* $FASTQ2* -o $OUTPUT
+    fi 
+    done >> vysledek.orezavani
+
+    #[3]rename all demultiplex and trimmed files RxFx na FxRx-rc
+    for f in OUTPUT*fastq; do mv "$f" "$(echo $f |sed -r 's/(R[0-9]{1,2})(F[0-9]{1,2})/\2\1-rc/')"; done
+    #[4]trim the names of the files to FxRx(-rc)-pairx.fastq
+    for f in *fastq; do mv "$f" "$(echo $f |sed -r 's/OUTPUT_output-assigned-//' | sed -r 's/trimmed-//')"; done
+  
+    #[5]Move all files to dir "Demultiplexed"
+    mkdir Demultiplexed
+    rm Demultiplexed/* 2> /dev/null 
+    mv F[1-9]* Demultiplexed
+
+    #[6]gzip compression of all files
+    gzip  Demultiplexed/*
+    gzip output*
+
+  cd ..
+done
+
+

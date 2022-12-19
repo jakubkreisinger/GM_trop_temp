@@ -1,0 +1,3611 @@
+---
+title: "Tropical vs. temperate birds"
+author: "Lucka a Kuba"
+date: "1/18/2021"
+output: html_document
+---
+
+
+# Load libraries and custom functions
+
+```{r warning=F, message=F  }
+
+set.seed(1234)
+
+library("phyloseq")
+library(vegan)
+library(ade4)
+library(ggplot2)
+library(ape)
+library(caper) 
+library(nlme)
+library(MuMIn) 
+library(plyr)
+library(gridExtra)
+library(picante)
+library(tcltk)
+library(parallel)
+library(doParallel)
+library(foreach)
+library(DESeq2)
+library(lme4)
+library(svglite) 
+library(sciplot)
+library(grDevices)
+library(ggh4x)
+library(scales)
+library(ape)
+library(Matrix)
+library(lme4)
+library(MASS) 
+library(glmmTMB)
+library(lattice)
+library(broom)
+library(dplyr)
+library(ggpubr)
+
+#extract legend from ggplot:
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+
+
+#define custom palette
+c.phylum <- c("dodgerblue2",
+              "#E31A1C", # red
+              "green4",
+              "#6A3D9A", # purple
+              "#FF7F00", # orange
+              "black",
+              "gold1",
+              "skyblue2",
+              "#FB9A99", # lt pink
+              "#CAB2D6", # lt purple
+              "gray70",
+              "#FDBF6F", # lt orange
+              "khaki2",
+              "maroon","orchid1","deeppink1","blue1","steelblue4",
+              "darkturquoise","green1","yellow4","yellow3",
+              "darkorange4","brown","gray70")
+#pie(rep(1,25), col=c.phylum)
+c.phylum_LS <- c("dodgerblue2",
+                 "green4",
+                 "#E31A1C", # red
+                 "#FF7F00", # orange
+                 "gold1",
+                 "black",
+                 "#6A3D9A", # purple
+                 "gray70",
+                 
+                 
+                 "#FB9A99", # lt pink
+                 "darkorange4",
+                 "orchid1",
+                 
+                 "#FDBF6F", # lt orange
+                 "khaki2", 
+                 "maroon","orchid1","deeppink1","blue1","steelblue4",
+                 "darkturquoise","green1","yellow4","yellow3",
+                 "darkorange4","gray70")
+#pie(rep(1,24), col=c.phylum_LS)
+
+c.class <- c("dodgerblue2",
+             "yellowgreen",
+             "#E31A1C", # red
+             "blue1",
+             "green4",
+             "#FF7F00", # orange
+             "gold1",
+               "black",
+             "gray70",
+             "skyblue2",
+             "blue4",
+             "#FDBF6F", # lt orange
+             "#CAB2D6", # lt purple
+             "khaki2")
+
+# adjust uncomplete taxonomic assignations
+manage_unassigned<-function(PHYLOSEQ,UNASS_STRING=NA,ADD,AFTER=TRUE){
+   TAXall<-data.frame(tax_table(PHYLOSEQ),stringsAsFactors = F)
+   if(!is.na(UNASS_STRING)){TAXall[UNASS_STRING]<-NA}
+   # TAXall<-as.character(TAXall[i,])
+   for(i in 1:dim(TAXall)[1]){  
+       TAX<-as.character(TAXall[i,])
+       if(AFTER==TRUE) {for(j in 2: length(TAX)){
+                            if(is.na(TAX[j])){TAX[j]<-ifelse(regexpr(ADD,TAX[j-1])>0,
+                                           TAX[j-1],paste(TAX[j-1],ADD,sep=""))}}}
+      if(AFTER==FALSE) {for(j in 2: length(TAX)){
+                            if(is.na(TAX[j])){TAX[j]<-ifelse(regexpr(ADD,TAX[j-1])>0,
+                                     TAX[j-1],ADD,paste(TAX[j-1],sep=""))}}}
+      TAXall[i,]<-TAX
+    }
+   TAXA<-colnames(TAXall)
+   SPECIES<-rownames(TAXall)
+   TAXall<-tax_table(TAXall)
+   taxa_names(TAXall)<-SPECIES
+   colnames(TAXall)<-TAXA
+   tax_table(PHYLOSEQ)<-TAXall
+  
+   #output
+   PHYLOSEQ
+}
+
+# extract information on selected bacterial ASVs in long-format
+phyloseq_2_GG<-function(which.taxa,which.phyloseq,manage.ussigned=NULL,unassign.string=NULL){  
+  RESULT<-data.frame(stringsAsFactors = F)
+  subset_phylos<-prune_taxa(taxa_names(which.phyloseq)%in%which.taxa,which.phyloseq)
+  SSUMS<-sample_sums(which.phyloseq)
+  for(i in 1: length(which.taxa))
+    {
+      actual.phylos<-prune_taxa(taxa_names(which.phyloseq)%in%which.taxa[i],which.phyloseq)
+      Abundance<-as.numeric(otu_table(actual.phylos))  
+      OTU<-rep(which.taxa[i],length(Abundance))
+      Seq.tot<-rep(SSUMS[i],length(Abundance))
+      Seq.tot<-SSUMS
+      Taxo.actual<-as.character(tax_table(actual.phylos))
+      if(manage.ussigned==T){
+        for(j in 2: length(Taxo.actual)){
+          if(is.na(Taxo.actual[j])){Taxo.actual[j]<-ifelse(regexpr(unassign.string,Taxo.actual[j-1])>0,
+                                           Taxo.actual[j-1],paste(Taxo.actual[j-1],unassign.string,sep=""))}
+        }
+      }
+      
+      Taxo.actual.rbind<-do.call("rbind", replicate(length(sample_sums(actual.phylos)), Taxo.actual, simplify = FALSE))
+      colnames(Taxo.actual.rbind)<-colnames(tax_table(which.phyloseq))
+      Sd<-sample_data(actual.phylos)
+      TEMP<-data.frame(Abundance,OTU,Seq.tot,Taxo.actual.rbind,Sd,stringsAsFactors = F)
+      RESULT<-rbind(RESULT,TEMP)
+    }
+    RESULT
+}
+
+c20 <- c("dodgerblue2","#E31A1C", # red
+         "green4",
+         "#6A3D9A", # purple
+         "#FF7F00", # orange
+         "black","gold1",
+         "skyblue2","#FB9A99", # lt pink
+         "palegreen2",
+         "#CAB2D6", # lt purple
+         "#FDBF6F", # lt orange
+         "khaki2",
+         "maroon","orchid1","deeppink1","blue1","steelblue4",
+         "darkturquoise","gray70")
+
+```
+
+# Load phyloseq database
+...and prepare subset without temperate-breeding birds captured in Africa 
+```{r warning=F, message=F }
+load("/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/data/PH_final.R")
+PH_filtered_migrants<-PH_final
+FILTER<-sample_data(PH_filtered_migrants)$Region_migration!="Temperate_in_tropic"
+PH_filtered<-prune_samples(FILTER,PH_filtered_migrants)
+```
+
+# Desctriptive statistics
+
+```{r warning=F, message=F }
+PH_filtered_migrants
+sum(otu_table(PH_final)) # total number of reads
+summary(sample_sums(PH_final)) # sequencing depth
+```
+
+# Subset of tropical and temperate samples
+```{r warning=F, message=F }
+Tropical_LS<-prune_samples(sample_data(PH_filtered)$region!="temperate",PH_filtered)
+Temperate_LS<-prune_samples(sample_data(PH_filtered)$region=="temperate",PH_filtered)
+
+Tropical_LS
+Temperate_LS
+length(levels(sample_data(PH_filtered)$GEN_SPEC))
+length(levels(sample_data(Tropical_LS)$GEN_SPEC))
+length(levels(sample_data(Temperate_LS)$GEN_SPEC))
+```
+
+# Rarefaction and data transformation
+```{r warning=F, message=F }
+
+PHYLOSEQ.R_trans<-transform_sample_counts(PH_filtered, function(x) x/sum(x))
+PHYLOSEQ.R_rare<-rarefy_even_depth(PH_filtered)
+
+```
+
+# Prepare sample summary (Table S1)
+```{r warning=F, message=F }
+#Sample data - supplement
+SD<-data.frame(sample_data(PH_filtered_migrants))
+CODES<-rownames(SD)
+FIRST<-function(z){
+  sapply(strsplit(z, "_"), function(x) x[1], simplify=T)}
+LAST<-function(z){
+  sapply(strsplit(z, "_"), function(x) x[3], simplify=T)}
+CODES<-ifelse(regexpr("_trus$",CODES)>0,FIRST(CODES),LAST(CODES))
+
+DF<-data.frame(code=CODES,species=SD$species,
+               category=SD$Region_migration_season,
+               diet=SD$diet)
+
+write.table(DF,file = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/Table_S1_metadata.txt",
+            row.names = F,sep="\t",quote = F)
+```
+
+# Barplors for Phylum and Class level taxonomy
+```{r warning=F, message=F }
+
+#merge ASVs to phylum and class level bins
+MERGED_phylum<-tax_glom(PHYLOSEQ.R_trans, taxrank="Phylum",NArm=FALSE)
+MERGED_class<-tax_glom(PHYLOSEQ.R_trans, taxrank="Class",NArm=FALSE)
+
+#prepare species abbreviations######
+GS<-sample_data(PHYLOSEQ.R_trans)$GEN_SPEC
+SPEC_GENUS.abb<-sample_data(PH_filtered)$Spec_lab
+GS.abb<-data.frame(GS,SPEC_GENUS.abb)
+
+###################################
+#FIGURE FRO PHYLA##################
+###################################
+
+#Select most abundant taxa
+phylum.prop = tapply(taxa_sums(PHYLOSEQ.R_trans), tax_table(PHYLOSEQ.R_trans)[, "Phylum"], sum, na.rm = TRUE)/dim(otu_table(PHYLOSEQ.R_trans))[1]
+top8phyla = names(sort(phylum.prop, TRUE))[1:7]
+
+#Merge samples for each host species and transform resulting OTU table to proportions (i.e. sums for each species being 1) 
+sample_data(MERGED_phylum)$Spec_zone<-paste(sample_data(MERGED_phylum)$species,
+                                            sample_data(MERGED_phylum)$region,sep=".")
+MERGED_phylum.glom<-merge_samples(MERGED_phylum,"GEN_SPEC")
+SD<-sample_data(MERGED_phylum)
+SD<-SD[duplicated(SD$GEN_SPEC)==F,]
+sample_names(SD)<-SD$GEN_SPEC
+sample_data(MERGED_phylum.glom)<-SD
+
+MERGED_phylum.glom.trans<-transform_sample_counts(MERGED_phylum.glom, function(x) x/sum(x))
+
+#prepare table on abundances of individual samples in each species
+mdf = psmelt(MERGED_phylum.glom.trans)
+top8phyla[top8phyla==""]<-"unassigned"
+mdf$Phylum<-as.character(mdf$Phylum)
+mdf$Phylum[!mdf$Phylum %in%c(top8phyla)]<-"others"
+mdf$Phylum<-factor(mdf$Phylum,levels=c(top8phyla,"others"))
+mdf<-mdf[with(mdf, order(Phylum)), ]
+
+#adjust host categories  
+mdf$region<-factor(mdf$region)
+levels(mdf$region)<-c("Temperate","Tropical")
+mdf$Region_migration<-as.factor(mdf$Region_migration)
+
+#sort species according to the first PCoA axis (Bray-Curtis dissimilarities)
+bc<-vegdist(otu_table(MERGED_phylum.glom.trans))
+wu<-bc
+ord<-ordinate(MERGED_phylum.glom.trans,method = "PCoA",wu)
+SORT<-names(sort(ord$vectors[,1])) 
+mdf$Sample<-factor(mdf$Sample,levels=SORT)
+
+#rename samples
+GEN.SPEC<-as.character(mdf$Sample)
+i<-1
+for(i in 1:length(GS.abb$GS))
+{
+  ACTUAL.long<-as.character(GS.abb$GS[i])
+  ACTUAL.abb<-as.character(GS.abb$SPEC_GENUS.abb[i])
+  GEN.SPEC<-gsub(ACTUAL.long,ACTUAL.abb,GEN.SPEC)
+}
+
+mdf$GEN.SPEC<-GEN.SPEC
+
+#rename host categories
+mdf$Region_migration_season<-gsub("Tropical_Wet","trop. (rainy s.)",mdf$Region_migration_season)
+mdf$Region_migration_season<-gsub("Tropical_Dry","trop. (dry s.)",mdf$Region_migration_season)
+mdf$Region_migration_season<-gsub("Temperate_Resid.Short","temp. (resid/short dist.)",mdf$Region_migration_season)
+mdf$Region_migration_season<-gsub("Temperate_Transaharan","temp. (trans-Saharan)",mdf$Region_migration_season)
+
+#final barplot
+p = ggplot(mdf, aes_string(x = "Sample", y = "Abundance", fill = "Phylum",order="Phylum"))+theme_bw()
+p = p + geom_bar(stat = "identity", position = "stack")
+p = p + theme(axis.text.x = element_text(angle = -90, hjust = 0,size=6),axis.text.y = element_text(hjust = 0,size=8),
+              axis.title.y = element_text(hjust = 0,size=0),axis.title.x = element_text(hjust = 0,size=0))
+p<-p +  scale_fill_manual(values = c.phylum_LS)
+p<-p+facet_grid(~ Region_migration_season,scales = "free", space = "free")+theme(strip.text.x = element_text(size = 10))
+p_phylum_species<-p+ theme(legend.position="right",
+                           legend.title = element_blank(),
+                           legend.text=element_text(size=9))
+p_phylum_species
+
+
+###################################
+#FIGURE FOR CLASSES################
+###################################
+
+#select the moct abundant classes
+class.prop = tapply(taxa_sums(PHYLOSEQ.R_trans), tax_table(PHYLOSEQ.R_trans)[, "Class"], sum, na.rm = TRUE)/dim(otu_table(PHYLOSEQ.R_trans))[1]
+top8phyla = names(sort(class.prop, TRUE))[1:8]
+# top8phyla
+top8phyla<-top8phyla
+top8phyla[top8phyla==""]<-"unassigned"
+
+TAXO<-(tax_table(MERGED_class)[,3]) 
+TAXO[!TAXO %in% c(top8phyla,"")] <- "others"
+TAXO[TAXO == "" ] <- "unassigned"
+tax_table(MERGED_class)[,3]<-TAXO
+
+#merge replicates for each species (to get a single profile for each host species)
+MERGED_class.glom<-merge_samples(MERGED_class,"GEN_SPEC")
+SD<-sample_data(MERGED_class)
+SD<-SD[duplicated(SD$GEN_SPEC)==F,]
+sample_names(SD)<-SD$GEN_SPEC
+sample_data(MERGED_class.glom)<-SD
+
+MERGED_class.glom.trans<-transform_sample_counts(MERGED_class.glom, function(x) x/sum(x))
+
+#prepare data.frame for barplot (basically the same steps as in the case of phylum-level barplot) 
+mdf = psmelt(MERGED_class.glom.trans)
+
+#order variables in the psmelt object
+mdf$Class<-factor(mdf$Class,levels=c(top8phyla,"others","unassigned"))
+mdf$Sample<-factor(mdf$Sample,levels=SORT)
+
+mdf<-mdf[with(mdf, order(Class)), ]
+mdf$Sample<-factor(mdf$Sample,levels=SORT)
+
+GEN.SPEC<-as.character(mdf$Sample)
+i<-1
+for(i in 1:length(GS.abb$GS))
+{
+  ACTUAL.long<-as.character(GS.abb$GS[i])
+  ACTUAL.abb<-as.character(GS.abb$SPEC_GENUS.abb[i])
+  GEN.SPEC<-gsub(ACTUAL.long,ACTUAL.abb,GEN.SPEC)
+}
+
+mdf$GEN.SPEC<-GEN.SPEC
+mdf$region<-as.factor(mdf$region)
+levels(mdf$region)<-c("Temperate","Tropical")
+mdf$Region_migration<-as.factor(mdf$Region_migration)
+
+mdf$Region_migration_season<-gsub("Tropical_Wet","trop. (rainy s.)",mdf$Region_migration_season)
+mdf$Region_migration_season<-gsub("Tropical_Dry","trop. (dry s.)",mdf$Region_migration_season)
+mdf$Region_migration_season<-gsub("Temperate_Resid.Short","temp. (resid/short dist.)",mdf$Region_migration_season)
+mdf$Region_migration_season<-gsub("Temperate_Transaharan","temp. (trans-Saharan)",mdf$Region_migration_season)
+
+c.class2<-c.class
+c.class2[3:4]<-c.class2[c(4,3)]
+p = ggplot(mdf, aes_string(x = "Sample", y = "Abundance", fill = "Class",order="Class"))+theme_bw()
+p = p + geom_bar(stat = "identity", position = "stack")
+p = p + theme(axis.text.x = element_text(angle = -90, hjust = 0,size=6),axis.text.y = element_text(hjust = 0,size=8),
+              axis.title.y = element_text(hjust = 0,size=0),axis.title.x = element_text(hjust = 0,size=0))
+p<-p +  scale_fill_manual(values = c.class2)
+p<-p+facet_grid(~Region_migration_season,scales = "free", space = "free")+theme(strip.text.x = element_text(size = 10))
+p_class_species<-p+ theme(legend.position="right",
+                          legend.title = element_blank(),
+                          legend.text=element_text(size=9))
+p_class_species
+
+#adjust plots 
+small_fig_fnc<-function(x){x+theme(plot.title = element_text(size=10),
+         axis.text.x= element_text(size=5),
+         strip.text.x=element_text(size=7),
+         legend.text = element_text(size=6),
+         plot.margin = unit(c(0.1,0.1,0.1, 0.1),"cm"))
+}
+
+
+p_phylum_species.s<-small_fig_fnc(p_phylum_species+labs(title="A) Phylum"))
+p_class_species.s<-small_fig_fnc(p_class_species+labs(title="B) Class"))
+
+#megre barplots for phyla and classes and save
+GRID<-grid.arrange(p_phylum_species.s+theme(panel.spacing = unit(0, "lines")), 
+                   p_class_species.s+theme(panel.spacing = unit(0, "lines")),
+                   nrow = 2)
+
+ggsave(filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/Fig_tax_class_phyl_LS1procento_size2.pdf",
+       plot = GRID,width=18,heigh=18,units="cm")
+```
+
+## Tables summarizing taxomonic content of microbial profiles
+
+```{r , warning=F, message=F }
+#input objects
+MERGED_phylum<-tax_glom(PHYLOSEQ.R_trans, taxrank="Phylum",NArm=FALSE)
+MERGED_class<-tax_glom(PHYLOSEQ.R_trans, taxrank="Class",NArm=FALSE)
+MERGED_order<-tax_glom(PHYLOSEQ.R_trans, taxrank="Order",NArm=FALSE)
+MERGED_family<-tax_glom(PHYLOSEQ.R_trans, taxrank="Family",NArm=FALSE)
+MERGED_genus<-tax_glom(PHYLOSEQ.R_trans, taxrank="Genus",NArm=FALSE)
+
+CATEGORY<-sample_data(MERGED_phylum)$Region_migration_season
+
+#statistics for categories
+otu_table(MERGED_class)[1:5,1:5]
+MEAN.phylum<-apply(otu_table(MERGED_phylum),2,function(x) tapply(x,CATEGORY,mean))
+SD.phylum<-apply(otu_table(MERGED_phylum),2,function(x) tapply(x,CATEGORY,sd))
+
+MEAN.class<-apply(otu_table(MERGED_class),2,function(x) tapply(x,CATEGORY,mean))
+SD.class<-apply(otu_table(MERGED_class),2,function(x) tapply(x,CATEGORY,sd))
+
+MEAN.order<-apply(otu_table(MERGED_order),2,function(x) tapply(x,CATEGORY,mean))
+SD.order<-apply(otu_table(MERGED_order),2,function(x) tapply(x,CATEGORY,sd))
+
+MEAN.family<-apply(otu_table(MERGED_family),2,function(x) tapply(x,CATEGORY,mean))
+SD.family<-apply(otu_table(MERGED_family),2,function(x) tapply(x,CATEGORY,sd))
+
+MEAN.genus<-apply(otu_table(MERGED_genus),2,function(x) tapply(x,CATEGORY,mean))
+SD.genus<-apply(otu_table(MERGED_genus),2,function(x) tapply(x,CATEGORY,sd))
+
+#statistics for whole dataset
+GMEAN.phylum<-apply(otu_table(MERGED_phylum),2,mean)
+GSD.phylum<-apply(otu_table(MERGED_phylum),2,sd)
+
+GMEAN.class<-apply(otu_table(MERGED_class),2,mean)
+GSD.class<-apply(otu_table(MERGED_class),2,sd)
+
+GMEAN.order<-apply(otu_table(MERGED_order),2,mean)
+GSD.order<-apply(otu_table(MERGED_order),2,sd)
+
+GMEAN.family<-apply(otu_table(MERGED_family),2,mean)
+GSD.family<-apply(otu_table(MERGED_family),2,sd)
+
+GMEAN.genus<-apply(otu_table(MERGED_genus),2,mean)
+GSD.genus<-apply(otu_table(MERGED_genus),2,sd)
+
+#final dataframes
+PHYLUM<-data.frame(tax_table(MERGED_phylum)[,1:2],
+                   GMEAN.phylum,GSD.phylum,
+                   MEAN.phylum[1,],SD.phylum[1,],
+                   MEAN.phylum[2,],SD.phylum[2,],
+                   MEAN.phylum[3,],SD.phylum[3,],
+                   MEAN.phylum[4,],SD.phylum[4,])
+
+names(PHYLUM)[3:dim(PHYLUM)[2]]<-c("MEAN.all","SD.all",
+                                   "Temperate_Resid.Short.MEAN","Temperate_Resid.Short.SD",
+                                   "Temperate_Transaharan.MEAN","Temperate_Transaharan.SD",
+                                   "Tropical_Dry.MEAN","Tropical_Dry.SD",
+                                   "Tropical_Wet.MEAN","Tropical_Wet.SD")
+
+#PHYLUM
+CLASS<-data.frame(tax_table(MERGED_class)[,1:3],
+                  GMEAN.class,GSD.class,
+                  MEAN.class[1,],SD.class[1,],
+                  MEAN.class[2,],SD.class[2,],
+                  MEAN.class[3,],SD.class[3,],
+                  MEAN.class[4,],SD.class[4,])
+
+names(CLASS)[4:dim(CLASS)[2]]<-c("MEAN.all","SD.all",
+                                 "Temperate_Resid.Short.MEAN","Temperate_Resid.Short.SD",
+                                 "Temperate_Transaharan.MEAN","Temperate_Transaharan.SD",
+                                 "Tropical_Dry.MEAN","Tropical_Dry.SD",
+                                 "Tropical_Wet.MEAN","Tropical_Wet.SD")
+
+#CLASS
+
+ORDER<-data.frame(tax_table(MERGED_order)[,1:4],
+                  GMEAN.order,GSD.order,
+                  MEAN.order[1,],SD.order[1,],
+                  MEAN.order[2,],SD.order[2,],
+                  MEAN.order[3,],SD.order[3,],
+                  MEAN.order[4,],SD.order[4,])
+
+names(ORDER)[5:dim(ORDER)[2]]<-c("MEAN.all","SD.all",
+                                 "Temperate_Resid.Short.MEAN","Temperate_Resid.Short.SD",
+                                 "Temperate_Transaharan.MEAN","Temperate_Transaharan.SD",
+                                 "Tropical_Dry.MEAN","Tropical_Dry.SD",
+                                 "Tropical_Wet.MEAN","Tropical_Wet.SD")
+
+#ORDER
+
+FAMILY<-data.frame(tax_table(MERGED_family)[,1:5],
+                   GMEAN.family,GSD.family,
+                   MEAN.family[1,],SD.family[1,],
+                   MEAN.family[2,],SD.family[2,],
+                   MEAN.family[3,],SD.family[3,],
+                   MEAN.family[4,],SD.family[4,])
+
+names(FAMILY)[6:dim(FAMILY)[2]]<-c("MEAN.all","SD.all",
+                                   "Temperate_Resid.Short.MEAN","Temperate_Resid.Short.SD",
+                                   "Temperate_Transaharan.MEAN","Temperate_Transaharan.SD",
+                                   "Tropical_Dry.MEAN","Tropical_Dry.SD",
+                                   "Tropical_Wet.MEAN","Tropical_Wet.SD")
+
+#FAMILY
+
+GENUS<-data.frame(tax_table(MERGED_genus)[,1:6],
+                  GMEAN.genus,GSD.genus,
+                  MEAN.genus[1,],SD.genus[1,],
+                  MEAN.genus[2,],SD.genus[2,],
+                  MEAN.genus[3,],SD.genus[3,],
+                  MEAN.genus[4,],SD.genus[4,])
+
+names(GENUS)[7:dim(GENUS)[2]]<-c("MEAN.all","SD.all",
+                                 "Temperate_Resid.Short.MEAN","Temperate_Resid.Short.SD",
+                                 "Temperate_Transaharan.MEAN","Temperate_Transaharan.SD",
+                                 "Tropical_Dry.MEAN","Tropical_Dry.SD",
+                                  "Tropical_Wet.MEAN","Tropical_Wet.SD")
+
+#GENUS
+#SAVE RESULTS
+write.table(format(PHYLUM,digits=10,scientific=F),"/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/Phylum.tab.txt",
+            sep="\t",row.names = F,quote = F)
+
+write.table(format(CLASS,digits=10,scientific=F),"/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/Class.tab.txt",
+            sep="\t",row.names = F,quote = F)
+
+write.table(format(ORDER,digits=10,scientific=F),"/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/Order.tab.txt",
+            sep="\t",row.names = F,quote = F)
+
+write.table(format(FAMILY,digits=10,scientific=F),"/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/Family.tab.txt",
+            sep="\t",row.names = F,quote = F)
+
+write.table(format(GENUS,digits=10,scientific=F),"/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/Genus.tab.txt",
+            sep="\t",row.names = F,quote = F)
+```
+
+# Phylogenetic tree for host species 
+```{r , warning=F, message=F ,fig.height=20}
+
+TREE<-read.tree("/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/data/TREE.mcc.renamed.tree")
+SM<-data.frame(sample_data(PHYLOSEQ.R_trans))[duplicated(sample_data(PHYLOSEQ.R_trans)$GEN_SPEC)==F,]
+dim(SM)
+
+DELETE<-TREE$tip.label[!TREE$tip.label%in%SM$GEN_SPEC]
+TREE<-drop.tip(TREE, DELETE)
+
+NAMES<-data.frame(TREE$tip.label)
+names(NAMES)<-"GEN_SPEC"
+
+SM<-(join(NAMES,SM))
+REGm<-SM$Region_migration
+REGm <- factor(REGm, levels = c("Tropical", "Temperate_Transaharan", "Temperate_Resid.Short"))
+
+{plot.phylo(TREE, adj=0, label.offset=0.05, lwd=2,cex=0.4,x.lim=c(0,120.5))
+  tiplabels(pch=21, col="black", adj=0.52, bg=REGm, cex=0.8)
+  legend(0, 16, c("Tropical","Temperate (Transaharan)","Temperate (Resid, Short)"), col = rep("black", 4),
+         text.col = NA,box.col=NA, pch = rep(21,4), pt.bg = c("black","red","green","blue"),cex=0.6)}
+
+
+REGm2<-REGm
+REGm2<-gsub("Tropical","black",REGm2)
+REGm2<-gsub("Temperate_Transaharan","red",REGm2)
+REGm2<-gsub("Temperate_Resid.Short","blue",REGm2)
+
+{cairo_pdf(filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/phylo.pdf", width = 8.5/2.5, height = 14/2.5)
+  
+par(mar=c(0.1,0.1,0.1,0.1))
+{plot.phylo(TREE, adj=0, label.offset=3, lwd=2,cex=0.4,x.lim=c(0,120))
+  tiplabels(pch=21, col="black", adj=0.52, bg=REGm2, cex=0.75)
+  legend(0, 95, c("tropical","temperate (tran-Saharan)","temperate (resid./short. dist.)"), col = rep("black", 4),
+         text.col = NA,box.col=NA, pch = rep(21,4), pt.bg = c("black","red","blue","green"),cex=0.6)}
+dev.off()}
+
+```
+
+# Calculate alpha diversity estimates
+```{r , warning=F, message=F }
+# calculate phylogenetic diversity
+pd.result <- pd(data.frame(otu_table(PHYLOSEQ.R_rare)), phy_tree(PHYLOSEQ.R_rare), include.root = TRUE)
+# calculate other diversity measures
+RICHNESS<-estimate_richness(PHYLOSEQ.R_rare,measures = c("Observed", "Chao1","Shannon"))
+RICHNESS$pd<-pd.result$PD
+
+#merge diversity estimates with sample data from phyloseq
+RICHNESS.sd<-data.frame(RICHNESS,sample_data(PHYLOSEQ.R_rare))
+
+#adjust levels in variable "Region_migration". Tropical species will be used as a reference level
+RICHNESS.sd$Region_migration_season <- factor(RICHNESS.sd$Region_migration_season,
+                                              levels = c("Tropical_Wet","Tropical_Dry","Temperate_Transaharan", "Temperate_Resid.Short"))
+
+levels(RICHNESS.sd$Region_migration_season) <- c("Tropical (Wet S.)","Tropical (Dry S.)","Temperate (Transaharan)","Temperate (Resid, Short)")
+```
+
+# Prepare data frame for comparative analyzes 
+
+```{r warning=F, message=F, fig.height=20 }
+
+DATAF_FILTER<-data.frame(REGION=sample_data(PHYLOSEQ.R_trans)$region,
+                         Region_migration=sample_data(PHYLOSEQ.R_trans)$Region_migration,
+                         Region_migration_season=sample_data(PHYLOSEQ.R_trans)$Region_migration_season,
+                         SPECIES=sample_data(PHYLOSEQ.R_trans)$GEN_SPEC,
+                         DIET=sample_data(PHYLOSEQ.R_trans)$CARNIV_HERBIV,
+                         RICHNESS)
+
+DATAF_FILTER$REGION <- factor(DATAF_FILTER$REGION, levels = c("tropical","temperate" ))
+
+DATAF_FILTER$Region_migration<-factor(DATAF_FILTER$Region_migration,levels =c("Tropical","Temperate_Transaharan","Temperate_Resid.Short" ))
+DATAF_FILTER$phylo<-DATAF_FILTER$SPECIES
+
+DATAF_FILTER$phylo<-as.factor(DATAF_FILTER$phylo)
+DATAF_FILTER$SPECIES<-as.factor(DATAF_FILTER$SPECIES)
+
+```
+
+# Alpha diversity analyzes (adjusted for the effect of species identity and phylogeny)
+
+```{r, warning=F, message=F }
+library(glmmTMB)
+
+# source function for glmm analyses (available at https://github.com/wzmli/phyloglmm)
+source("~/software/Rfunctions/phyloglmm-1.0.0/lme4_phylo_setup.R")
+source("~/software/Rfunctions/glmmTMB_phylo_setup_v2.R")
+
+RICHNESS.sd$phylo<-RICHNESS.sd$GEN_SPEC
+RICHNESS.sd$SPECIES<-RICHNESS.sd$GEN_SPEC
+RICHNESS.sd$SPECIES2<-1
+
+phyloZ <- phylo.to.Z(TREE)
+
+#########################
+#models for Shannon div.#
+#########################
+
+#effect of species + phylogeny
+modelTMB.div_shan <- glmmTMBphylo(Shannon~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE) 
+
+#effect of species (without phylogeny)
+modelTMB.div_shan_sp <- glmmTMB(Shannon~Region_migration_season+diet + (1|SPECIES)
+                             , data=RICHNESS.sd
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+# without the effect and phylogeny
+modelTMB.div_shan_not <- glmmTMB(Shannon~Region_migration_season+diet
+                             , data=RICHNESS.sd
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE) 
+
+
+##################
+#models for Chao1#
+##################
+
+# three models with the same structure as mentioned above
+modelTMB.div_chao <- glmmTMBphylo(Chao1^0.5~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE) 
+
+modelTMB.div_chao_sp <- glmmTMB(Chao1^0.5~Region_migration_season+diet + (1|SPECIES)
+                             , data=RICHNESS.sd
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_chao_not <- glmmTMB(Chao1^0.5~Region_migration_season+diet
+                             , data=RICHNESS.sd
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+##################3#######
+#models for ASVS richness#
+##########################
+
+# three models with the same structure as mentioned above
+
+modelTMB.div_obs <- glmmTMBphylo(Observed^0.5~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE) 
+
+modelTMB.div_obs_sp <- glmmTMB(Observed^0.5~Region_migration_season+diet + (1|SPECIES)
+                             , data=RICHNESS.sd
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE) 
+
+modelTMB.div_obs_not <- glmmTMB(Observed^0.5~Region_migration_season+diet
+                             , data=RICHNESS.sd
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE) 
+
+##############################
+#models for phylogenetic div.#
+##############################
+
+# three models with the same structure as mentioned above
+#pd
+modelTMB.div_pd <- glmmTMBphylo(pd^0.5~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_pd_sp <- glmmTMB(pd^0.5~Region_migration_season+diet+(1|SPECIES)
+                             , data=RICHNESS.sd
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_pd_not <- glmmTMB(pd^0.5~Region_migration_season+diet
+                             , data=RICHNESS.sd
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+
+########Tables with parameter estimates########
+SUMMARY_Shan<-summary(modelTMB.div_shan)
+SUMMARY_chao<-summary(modelTMB.div_chao)
+SUMMARY_obs<-summary(modelTMB.div_obs)
+SUMMARY_pd<-summary(modelTMB.div_pd)
+
+DF.div <-rbind(summary(modelTMB.div_shan)$ coefficients$cond,
+               summary(modelTMB.div_chao)$ coefficients$cond,
+               summary(modelTMB.div_obs)$ coefficients$cond,
+               summary(modelTMB.div_pd)$ coefficients$cond)
+
+DF.div<-data.frame(Response=c("Shannon","","","","",
+                              "Chao1","","","","",
+                              "Observed","","","","",
+                              "Phylog. div","","","",""),
+                   Predictor=rownames(DF.div),
+                   DF.div) 
+
+#########ANOVA Tables ####
+Anova_obs<-car::Anova(modelTMB.div_obs)
+Anova_chao<-car::Anova(modelTMB.div_chao)
+Anova_pd<-car::Anova(modelTMB.div_pd)
+Anova_shan<-car::Anova(modelTMB.div_shan)
+
+Anova_tabs<-rbind(Anova_shan,Anova_chao,Anova_obs,Anova_pd)
+Anova_tabs<-data.frame(Response=c("Shannon","","Chao1","","Observed","","Phylog. div",""),
+                       Predictor=c(rownames(Anova_tabs)),
+                       Anova_tabs)
+
+Anova_tabs
+
+#AIC values 
+AIC_Shan<-AIC(modelTMB.div_shan)
+AIC_chao<-AIC(modelTMB.div_chao)
+AIC_obs<-AIC(modelTMB.div_obs)
+AIC_pd<-AIC(modelTMB.div_pd)
+
+AIC_Shan_sp<-AIC(modelTMB.div_shan_sp)
+AIC_chao_sp<-AIC(modelTMB.div_chao_sp)
+AIC_obs_sp<-AIC(modelTMB.div_obs_sp)
+AIC_pd_sp<-AIC(modelTMB.div_pd_sp)
+
+AIC_Shan_not<-AIC(modelTMB.div_shan_not)
+AIC_chao_not<-AIC(modelTMB.div_chao_not)
+AIC_obs_not<-AIC(modelTMB.div_obs_not)
+AIC_pd_not<-AIC(modelTMB.div_pd_not)
+
+
+AIC.tab_SP_Phy<-rbind(c(AIC_Shan,AIC_Shan_sp,AIC_Shan_not),
+               c(AIC_chao,AIC_chao_sp,AIC_chao_not),
+               c(AIC_obs,AIC_obs_sp,AIC_obs_not),
+               c(AIC_pd,AIC_pd_sp,AIC_pd_not))
+
+# calculate model weights (AIC - based)
+W.tab_SP_Phy<-t(apply(AIC.tab_SP_Phy,1,function(x) 
+                   (exp( -0.5 *(x-min(x))))/sum(exp( -0.5 *(x-min(x))))))
+
+AIC_W.tab_SP_Phy<-cbind(AIC.tab_SP_Phy[,1],W.tab_SP_Phy[,1],
+                        AIC.tab_SP_Phy[,2],W.tab_SP_Phy[,2],
+                        AIC.tab_SP_Phy[,3],W.tab_SP_Phy[,3])
+
+rownames(AIC_W.tab_SP_Phy)<-c("Shannon","Chao1","Observed","Phylog. Div.")
+colnames(AIC_W.tab_SP_Phy)<-c("Phylogeny + Species (AIC)","Phylogeny + Species (AICw)",
+                              "Species (AIC)","Species (AICw)",
+                              "No random var. (AIC)","No random var. (AICw)")
+
+AIC_W.tab_SP_Phy<-data.frame(Diversity_index=rownames(AIC_W.tab_SP_Phy),
+                             AIC_W.tab_SP_Phy)
+
+#write tables to the hard drive
+write.table(DF.div,"/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/TMB_DF.div_LS.txt",
+            sep="\t",row.names = F, quote = F)
+write.table(Anova_tabs,"/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/Anova_tabs_alpha.txt",
+            sep="\t",row.names = F, quote = F)
+write.table(AIC_W.tab_SP_Phy,"/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/AIC_tab_alpha_div.txt",
+            sep="\t",row.names = F, quote = F)
+
+```
+
+#Boxplots - alpha diversity
+```{r, warning=F, message=F }
+library(multcomp)
+# Tukey posthoc tests + letters
+TUK<- glht(modelTMB.div_shan,  mcp(Region_migration_season = "Tukey"))
+LET_SHAN<-cld(TUK)
+TUK<- glht(modelTMB.div_chao,  mcp(Region_migration_season = "Tukey"))
+LET_CHAO<-cld(TUK)
+TUK<- glht(modelTMB.div_obs,  mcp(Region_migration_season = "Tukey"))
+LET_OBS<-cld(TUK)
+TUK<- glht(modelTMB.div_pd,  mcp(Region_migration_season = "Tukey"))
+LET_PD<-cld(TUK)
+
+LET_SHAN2<-data.frame(Letters=LET_SHAN$mcletters$Letters,
+                     Region_migration_season=names(LET_SHAN$mcletters$Letters),
+                     Type="Shannon",
+                     Diversity=4.2)
+LET_CHAO2<-data.frame(Letters=LET_CHAO$mcletters$Letters,
+                     Region_migration_season=names(LET_CHAO$mcletters$Letters),
+                     Type="Chao1",
+                     Diversity=110)
+LET_OBS2<-data.frame(Letters=LET_OBS$mcletters$Letters,
+                     Region_migration_season=names(LET_OBS$mcletters$Letters),
+                     Type="Observed",
+                     Diversity=105)
+LET_PD2<-data.frame(Letters=LET_PD$mcletters$Letters,
+                     Region_migration_season=names(LET_PD$mcletters$Letters),
+                     Type="Phylo. Div.",
+                    Diversity=17)
+LETT_ALL<-rbind(LET_SHAN2,LET_CHAO2,LET_OBS2,LET_PD2)
+
+
+DFplot<-data.frame(c(RICHNESS.sd$Shannon,RICHNESS.sd$Chao1,RICHNESS.sd$Observed,RICHNESS.sd$pd),
+                   rep(RICHNESS.sd$Region_migration,4),rep(RICHNESS.sd$Region_migration_season,4),
+                   rep(c("Shannon","Chao1","Observed","Phylo. Div."),each=length(RICHNESS.sd$Shannon)),
+                   rep(RICHNESS.sd$diet,4))
+
+names(DFplot)<-c("Diversity","Region_migration","Region_migration_season","Type","diet")
+
+gg<-ggplot(data = DFplot,aes(x=Region_migration_season,y=Diversity))+
+  geom_boxplot(outlier.shape = NA)+geom_jitter(alpha=0.3,size=0.4,shape=16)+facet_wrap(~Type,nrow=1,scales="free")+theme_bw()
+
+gg<-gg+ theme(axis.text.x = element_text(angle = 90, hjust = 1,size=7),
+              axis.title.x = element_text(size=0),
+              axis.title.y=element_text(size=7),
+              axis.text=element_text(size=7),
+              plot.title = element_text(size = 7),
+              strip.text = element_text(angle = 0,size = 7),
+              plot.margin=unit(c(0.1,0.1,0.1,0.1), "cm"))
+gg<-gg+geom_text(data = LETT_ALL,aes(label=Letters))
+
+ggsave(plot=gg,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/boxplot_alpha.pdf",width = 16, height = 8, units = "cm")
+
+#smaller plot version without chao1 (shows the same pattern as ASV richness)
+DFplot.sub<-DFplot[DFplot$Type!="Chao1",]
+LETT_ALL.sub<-LETT_ALL[LETT_ALL$Type!="Chao1",]
+
+levels(DFplot.sub$Region_migration_season)<-c("tropical (rainy s.)", "tropical (dry s.)","temperate (trans-Saharan)","temperate (resid./short dist.)")
+
+LETT_ALL.sub$Region_migration_season[LETT_ALL.sub$Region_migration_season=="Tropical (Dry S.)"]<-"tropical (dry s.)"
+LETT_ALL.sub$Region_migration_season[LETT_ALL.sub$Region_migration_season=="Tropical (Wet S.)"]<-"tropical (rainy s.)"
+LETT_ALL.sub$Region_migration_season[LETT_ALL.sub$Region_migration_season=="Temperate (Resid, Short)"]<-"temperate (resid./short dist.)"
+LETT_ALL.sub$Region_migration_season[LETT_ALL.sub$Region_migration_season=="Temperate (Transaharan)"]<-"temperate (trans-Saharan)"
+
+gg2<-ggplot(data = DFplot.sub,aes(x=Region_migration_season,y=Diversity))+
+  geom_boxplot(outlier.shape = NA)+geom_jitter(alpha=0.3,size=0.4,shape=16)+facet_wrap(~Type,nrow=1,scales="free")+theme_bw()
+gg2<-gg2+geom_text(data = LETT_ALL.sub,aes(label=Letters),size=2)
+gg2<-gg2+ theme(axis.text.x = element_text(angle = 90, hjust = 1,size=7),
+              axis.title.x = element_text(size=0),
+              axis.title.y=element_text(size=7),
+              axis.text=element_text(size=7),
+              plot.title = element_text(size = 7),
+              strip.text = element_text(angle = 0,size = 7),
+              plot.margin=unit(c(0.1,0.1,0.1,0.1), "cm"))
+
+gg2<-gg2+theme(axis.text.x = element_text(angle = 60))
+ggsave(plot=gg2,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/boxplot_alpha_v2.pdf",width = 8, height = 8, units = "cm")
+gg2
+```
+
+# Alpha diversity - effect of migration
+- Basically tha same models as above for the subset of temeprate hosts 
+```{r , warning=F, message=F }
+
+RICHNESS.sd_temp<-subset(RICHNESS.sd,RICHNESS.sd$Region_migration!="Tropical")
+
+modelTMB.div_shan_mig_temp <- glmmTMBphylo(Shannon~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_shan_mig_temp_sp <- glmmTMB(Shannon~Region_migration_season+diet+(1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_shan_mig_temp_not <- glmmTMB(Shannon~Region_migration_season+diet
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_chao_mig_temp <- glmmTMBphylo(Chao1^0.5~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_chao_mig_temp_sp <- glmmTMB(Chao1^0.5~Region_migration_season+diet+(1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_chao_mig_temp_not <- glmmTMB(Chao1^0.5~Region_migration_season+diet
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_obs_mig_temp <- glmmTMBphylo(Observed^0.5~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_obs_mig_temp_sp <- glmmTMB(Observed^0.5~Region_migration_season+diet+(1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_obs_mig_temp_not <- glmmTMB(Observed^0.5~Region_migration_season+diet
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_pd_mig_temp <- glmmTMBphylo(pd^0.5~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_pd_mig_temp_sp <- glmmTMB(pd^0.5~Region_migration_season+diet+(1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_pd_mig_temp_not <- glmmTMB(pd^0.5~Region_migration+diet
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+DF.div_mig_temp<-rbind(summary(modelTMB.div_shan_mig_temp)$coefficients$cond,
+                       summary(modelTMB.div_chao_mig_temp)$coefficients$cond,
+                       summary(modelTMB.div_obs_mig_temp)$coefficients$cond,
+                       summary(modelTMB.div_pd_mig_temp)$coefficients$cond)
+
+DF.div_mig_temp<-data.frame(Response=c("Shannon","","",
+                              "Chao1","","",
+                              "Observed","","",
+                              "Phylog. div","",""),
+                   Predictor=rownames(DF.div_mig_temp),
+                   DF.div_mig_temp) 
+
+DF.div_mig_temp
+
+AIC_Shan_mig_temp<-AIC(modelTMB.div_shan_mig_temp)
+AIC_chao_mig_temp<-AIC(modelTMB.div_chao_mig_temp)
+AIC_obs_mig_temp<-AIC(modelTMB.div_obs_mig_temp)
+AIC_pd_mig_temp<-AIC(modelTMB.div_pd_mig_temp)
+
+AIC_Shan_mig_temp_sp<-AIC(modelTMB.div_shan_mig_temp_sp)
+AIC_chao_mig_temp_sp<-AIC(modelTMB.div_chao_mig_temp_sp)
+AIC_obs_mig_temp_sp<-AIC(modelTMB.div_obs_mig_temp_sp)
+AIC_pd_mig_temp_sp<-AIC(modelTMB.div_pd_mig_temp_sp)
+
+AIC_Shan_mig_temp_not<-AIC(modelTMB.div_shan_mig_temp_not)
+AIC_chao_mig_temp_not<-AIC(modelTMB.div_chao_mig_temp_not)
+AIC_obs_mig_temp_not<-AIC(modelTMB.div_obs_mig_temp_not)
+AIC_pd_mig_temp_not<-AIC(modelTMB.div_pd_mig_temp_not)
+
+AIC.tab_mig_temp_SP_Phy<-rbind(c(AIC_Shan_mig_temp,AIC_Shan_mig_temp_sp,AIC_Shan_mig_temp_not),
+               c(AIC_chao_mig_temp,AIC_chao_mig_temp_sp,AIC_chao_mig_temp_not),
+               c(AIC_obs_mig_temp,AIC_obs_mig_temp_sp,AIC_obs_mig_temp_not),
+               c(AIC_pd_mig_temp,AIC_pd_mig_temp_sp,AIC_pd_mig_temp_not))
+AIC.tab_mig_temp_SP_Phy
+```
+
+# Alpha diversity - wet vs. dry
+- Basically tha same models as above for the subset of tropical hosts only
+```{r , warning=F, message=F }
+RICHNESS.sd_temp<-subset(RICHNESS.sd,RICHNESS.sd$Region_migration=="Tropical")
+RICHNESS.sd_temp$Elevation
+modelTMB.div_shan_mig_temp <- glmmTMBphylo(Shannon~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE) 
+
+modelTMB.div_shan_mig_temp_sp <- glmmTMB(Shannon~Region_migration_season+diet+(1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_shan_mig_temp_not <- glmmTMB(Shannon~Region_migration_season+diet
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_chao_mig_temp <- glmmTMBphylo(Chao1^0.5~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_chao_mig_temp_sp <- glmmTMB(Chao1^0.5~Region_migration_season+diet+(1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_chao_mig_temp_not <- glmmTMB(Chao1^0.5~Region_migration_season+diet
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_obs_mig_temp <- glmmTMBphylo(Observed^0.5~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_obs_mig_temp_sp <- glmmTMB(Observed^0.5~Region_migration_season+diet+(1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_obs_mig_temp_not <- glmmTMB(Observed^0.5~Region_migration_season+diet
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_pd_mig_temp <- glmmTMBphylo(pd^0.5~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_pd_mig_temp_sp <- glmmTMB(pd^0.5~Region_migration_season+diet+(1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_pd_mig_temp_not <- glmmTMB(pd^0.5~Region_migration_season+diet
+                             , data=RICHNESS.sd_temp
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+
+DF.div_mig_temp<-rbind(summary(modelTMB.div_shan_mig_temp)$coefficients$cond,
+                       summary(modelTMB.div_chao_mig_temp)$coefficients$cond,
+                       summary(modelTMB.div_obs_mig_temp)$coefficients$cond,
+                       summary(modelTMB.div_pd_mig_temp)$coefficients$cond)
+
+DF.div_mig_temp
+
+car::Anova(modelTMB.div_shan_mig_temp)
+car::Anova(modelTMB.div_chao_mig_temp)
+car::Anova(modelTMB.div_obs_mig_temp)
+car::Anova(modelTMB.div_pd_mig_temp)
+
+#write.table(DF.div_mig_temp,"~/Statistika/Tropicke_temperatni/Figures_2/TMB_DF.div.temp_LS.txt",sep="\t")
+
+AIC_Shan_mig_temp<-AIC(modelTMB.div_shan_mig_temp)
+AIC_chao_mig_temp<-AIC(modelTMB.div_chao_mig_temp)
+AIC_obs_mig_temp<-AIC(modelTMB.div_obs_mig_temp)
+AIC_pd_mig_temp<-AIC(modelTMB.div_pd_mig_temp)
+
+AIC_Shan_mig_temp_sp<-AIC(modelTMB.div_shan_mig_temp_sp)
+AIC_chao_mig_temp_sp<-AIC(modelTMB.div_chao_mig_temp_sp)
+AIC_obs_mig_temp_sp<-AIC(modelTMB.div_obs_mig_temp_sp)
+AIC_pd_mig_temp_sp<-AIC(modelTMB.div_pd_mig_temp_sp)
+
+AIC_Shan_mig_temp_not<-AIC(modelTMB.div_shan_mig_temp_not)
+AIC_chao_mig_temp_not<-AIC(modelTMB.div_chao_mig_temp_not)
+AIC_obs_mig_temp_not<-AIC(modelTMB.div_obs_mig_temp_not)
+AIC_pd_mig_temp_not<-AIC(modelTMB.div_pd_mig_temp_not)
+
+# AIC_Shan_PhySp_Sp<-AIC(modelTMB.div_shan)-AIC(modelTMB.div_shan_sp)
+
+
+AIC.tab_mig_temp_SP_Phy<-rbind(c(AIC_Shan_mig_temp,AIC_Shan_mig_temp_sp,AIC_Shan_mig_temp_not),
+               c(AIC_chao_mig_temp,AIC_chao_mig_temp_sp,AIC_chao_mig_temp_not),
+               c(AIC_obs_mig_temp,AIC_obs_mig_temp_sp,AIC_obs_mig_temp_not),
+               c(AIC_pd_mig_temp,AIC_pd_mig_temp_sp,AIC_pd_mig_temp_not))
+AIC.tab_mig_temp_SP_Phy
+```
+
+# Alpha diversity - for tropical hosts 
+- compares the effect of season and the effect of elevation 
+```{r , warning=F, message=F }
+RICHNESS.sd_temp<-subset(RICHNESS.sd,RICHNESS.sd$Region_migration=="Tropical")
+
+modelTMB.div_shan_mig_temp_E <- glmmTMBphylo(Shannon~Elevation+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE) 
+
+modelTMB.div_shan_mig_temp_S <- glmmTMBphylo(Shannon~season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE) 
+
+modelTMB.div_chao_mig_temp_E <- glmmTMBphylo(Chao1^0.5~Elevation+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_chao_mig_temp_S <- glmmTMBphylo(Chao1^0.5~season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_obs_mig_temp_E <- glmmTMBphylo(Observed^0.5~Elevation+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_obs_mig_temp_S <- glmmTMBphylo(Observed^0.5~season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_pd_mig_temp_E <- glmmTMBphylo(pd^0.5~Elevation+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+modelTMB.div_pd_mig_temp_S <- glmmTMBphylo(pd^0.5~season+diet+(1|phylo) + (1|SPECIES)
+                             , data=RICHNESS.sd_temp
+                             , phyloZ=phyloZ
+                             , phylonm = "phylo"
+                             , doFit=TRUE
+                             , dispformula = ~1
+                             , REML = FALSE)
+
+car::Anova(modelTMB.div_shan_mig_temp_S)
+car::Anova(modelTMB.div_chao_mig_temp_S)
+car::Anova(modelTMB.div_obs_mig_temp_S)
+car::Anova(modelTMB.div_pd_mig_temp_S)
+
+car::Anova(modelTMB.div_shan_mig_temp_E)
+car::Anova(modelTMB.div_chao_mig_temp_E)
+car::Anova(modelTMB.div_obs_mig_temp_E)
+car::Anova(modelTMB.div_pd_mig_temp_E)
+
+modelTMB.div_shan_mig_temp_E
+modelTMB.div_chao_mig_temp_E
+modelTMB.div_obs_mig_temp_E
+modelTMB.div_pd_mig_temp_E
+
+
+AIC_elevation<-c(AIC(modelTMB.div_shan_mig_temp_E),
+                 AIC(modelTMB.div_chao_mig_temp_E),
+                 AIC(modelTMB.div_obs_mig_temp_E),
+                 AIC(modelTMB.div_pd_mig_temp_E))
+
+AIC_season<-c(AIC(modelTMB.div_shan_mig_temp_S),
+                 AIC(modelTMB.div_chao_mig_temp_S),
+                 AIC(modelTMB.div_obs_mig_temp_S),
+                 AIC(modelTMB.div_pd_mig_temp_S))
+
+
+AIC.matrix<-cbind(AIC_elevation,AIC_season)
+AIC.delta.matrix<-t(apply(AIC.matrix,1,function(x) x-min(x)))
+
+weights.AIC_tab<-t(apply(AIC.delta.matrix,1,function(x) 
+                  (exp( -0.5 *(x-min(x))))/sum(exp( -0.5 *(x-min(x))))))
+DF.AIC<-data.frame(Diversity=rep(c("Shannon","Chao1","Observed","Phylogenetic div."),each=1),
+                   AIC_elevation=AIC_elevation,
+                   AIC_weight_elevation=weights.AIC_tab[,1],
+                   AIC_season=AIC_season,
+                   AIC_weight_season=weights.AIC_tab[,2])
+DF.AIC
+
+write.table(DF.AIC,file = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/AIC_elevation_season_alphadiversity.txt")
+
+```
+
+# PCoA ordination 
+
+```{r , warning=F, message=F ,fig.height=8,fig.width=8}
+PHYLOSEQ.R_trans.sub<-PHYLOSEQ.R_trans
+PHYLOSEQ.R_rare.sub<-PHYLOSEQ.R_rare
+
+#calculate dissimilarities
+wu<-UniFrac(PHYLOSEQ.R_trans.sub,weighted=T,parallel =T)
+uu<-UniFrac(PHYLOSEQ.R_rare.sub,weighted=F,parallel =T)
+bray<-vegdist(otu_table(PHYLOSEQ.R_trans.sub)^0.5,method="bray")
+jac<-vegdist(data.frame(otu_table(PHYLOSEQ.R_rare.sub)),method="jaccard",binary = T)
+
+#fit ordination
+wu.ord<-ordinate(PHYLOSEQ.R_trans.sub,method="PCoA",distance=wu)
+uu.ord<-ordinate(PHYLOSEQ.R_trans.sub,method="PCoA",distance=uu)
+bray.ord<-ordinate(PHYLOSEQ.R_trans.sub,method="PCoA",distance=bray)
+jac.ord<-ordinate(PHYLOSEQ.R_trans.sub,method="PCoA",distance=jac)
+
+#construction of PCoA plots
+p.wu<-plot_ordination(PHYLOSEQ.R_trans.sub,wu.ord,  type = "samples",
+                      color = "Region_migration_season",axes = 1:2)+ggtitle("A) weigted UniFrac")+theme_bw()
+p.uu<-plot_ordination(PHYLOSEQ.R_trans.sub,uu.ord,  type = "samples",
+                      color = "Region_migration_season",axes = 1:2)+ggtitle("B) unweigted UniFrac")+theme_bw()
+p.bc<-plot_ordination(PHYLOSEQ.R_trans.sub,bray.ord,  type = "samples",
+                      color = "Region_migration_season",axes = 1:2)+ggtitle("C) Bray-Curtis")+theme_bw()
+p.ja<-plot_ordination(PHYLOSEQ.R_trans.sub,jac.ord,  type = "samples",
+                      color = "Region_migration_season",axes = 1:2)+ggtitle("D) Jaccard")+theme_bw()
+
+#adjust plotting characters
+p.wu$layers <- p.wu$layers[-1]
+p.uu$layers <- p.uu$layers[-1]
+p.bc$layers <- p.bc$layers[-1]
+p.ja$layers <- p.ja$layers[-1]
+
+p.wu<-p.wu + geom_point(size=1,alpha=0.5)+scale_color_manual(values =c20[1:4])
+p.uu<-p.uu + geom_point(size=1,alpha=0.5)+scale_color_manual(values =c20[1:4])
+p.bc<-p.bc + geom_point(size=1,alpha=0.5)+scale_color_manual(values =c20[1:4])
+p.ja<-p.ja + geom_point(size=1,alpha=0.5)+scale_color_manual(values =c20[1:4])
+
+SMALL_PLOT<-function(x){x+theme(legend.position="bottom",
+                                legend.title = element_blank(),
+                                  axis.title=element_text(size=7),
+                                  axis.text=element_text(size=7),
+                                  plot.title = element_text(size = 7),
+                                  plot.margin=unit(c(0.1,0.1,0.1,0.1), "cm"))}
+
+SMALL_PLOT.2<-function(x){x+theme(legend.position="bottom",
+                                  legend.text = element_text(size=7),
+                                legend.title = element_blank(),
+                                  axis.title=element_text(size=7),
+                                  axis.text=element_text(size=7),
+                                  plot.title = element_text(size = 7),
+                                  plot.margin=unit(c(0.1,0.1,0.1,0.1), "cm"),
+                                strip.text = element_text(size = 7))}
+
+p.wu.LS<-p.wu+ggtitle("D) weighted UniFrac")
+p.uu.LS<-p.uu+ggtitle("C) unweigted UniFrac")
+p.bc.LS<-p.bc+ggtitle("A) Bray-Curtis")
+p.ja.LS<-p.ja+ggtitle("B) Jaccard")
+
+c<-SMALL_PLOT(p.wu.LS)
+p.uu.LS<-SMALL_PLOT(p.uu.LS)
+p.bc.LS<-SMALL_PLOT(p.bc.LS)
+p.ja.LS<-SMALL_PLOT(p.ja.LS)
+
+GRID<-ggpubr::ggarrange(p.bc.LS,p.ja.LS,p.wu.LS,p.uu.LS,
+                        ncol = 2,nrow = 2,common.legend = T,legend="bottom")
+
+ggsave(GRID,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/PCOA.pdf",width = 16, height = 16, units = "cm")
+GRID
+
+####################################
+#small plot version without UniFrac#
+####################################
+
+p.bc.LS2<-p.bc.LS+guides(col=guide_legend(ncol=1,byrow=F))
+p.ja.LS2<-p.ja.LS+guides(col=guide_legend(ncol=1,byrow=F))
+
+p.bc.LS2<-p.bc.LS2+  scale_color_manual(labels=c("Temperate (resid./short dist. migr.)","Temperate (trans-Saharan)","Tropical (rainy s.)", "Tropical (dry s.)"),
+                              values =c20[1:4])
+
+p.ja.LS2<-p.ja.LS2+  scale_color_manual(labels=c("Temperate (resid./short dist. migr.)","Temperate (trans-Saharan)","Tropical (rainy s.)", "Tropical (dry s.)"),
+                              values =c20[1:4])
+
+GRID<-ggpubr::ggarrange(p.bc.LS2,p.ja.LS2,
+                        ncol = 1,nrow = 2,common.legend = T,legend="bottom")
+
+ggsave(GRID,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/PCOA_v2.pdf",width = 8, height = 16, units = "cm")
+GRID
+
+```
+
+# Data frames including PCoA scores (for later glmm analyses)
+
+```{r message=FALSE, , warning=F}
+
+wu.pc<-pcoa(wu,correction = "cailliez")$vectors
+uu.pc<-pcoa(uu,correction = "cailliez")$vectors
+jac.pc<-pcoa(jac,correction = "lingoes")$vectors
+bray.pc<-pcoa(bray,correction = "cailliez")$vectors
+
+colnames(wu.pc)<-paste(colnames(wu.pc),"wu",sep="")
+colnames(uu.pc)<-paste(colnames(uu.pc),"uu",sep="")
+colnames(jac.pc)<-paste(colnames(jac.pc),"jac",sep="")
+colnames(bray.pc)<-paste(colnames(bray.pc),"bray",sep="")
+
+SD<-sample_data(PHYLOSEQ.R_trans)
+SD<-data.frame(SD)
+DATAF_FILTER.t<-SD
+DATAF_FILTER.t$SPECIES<-DATAF_FILTER.t$species.x
+DATAF_FILTER.t$phylo<-DATAF_FILTER.t$species.x
+DATAF_FILTER.t<-data.frame(DATAF_FILTER.t,wu.pc[,1:2],uu.pc[,1:2],jac.pc[,1:2],bray.pc[,1:2])
+
+DATAF_FILTER.t$Region_migration <- factor(DATAF_FILTER.t$Region_migration, levels = c("Tropical","Temperate_Transaharan","Temperate_Resid.Short"))
+DATAF_FILTER.t$Region_migration_season<-as.factor(DATAF_FILTER.t$Region_migration_season)
+DATAF_FILTER.t$Region_migration_season<-factor(DATAF_FILTER.t$Region_migration_season, 
+                                               levels = c("Tropical_Dry","Tropical_Wet","Temperate_Resid.Short","Temperate_Transaharan"))
+
+DATAF_FILTER.t$diet<-DATAF_FILTER.t$CARNIV_HERBIV
+DATAF_FILTER.t$phylo<-as.factor(DATAF_FILTER.t$species)
+DATAF_FILTER.t$SPECIES<-as.factor(DATAF_FILTER.t$species)
+
+```
+
+#Glmms testing the effect of host category and diet on microbiota compositional variation (i.e. PCoA axes)
+```{r , warning=F, message=F }
+######################################
+#BRAY-CURTIS AX1######################
+######################################
+
+DATAF_FILTER.t$Target.axis<-DATAF_FILTER.t$Axis.1bray #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+
+# first model always include effect of host species and phylogenetic correlation
+modelTMB_pcoa_rm_bc_1 <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE) 
+
+# second model always include effect of host species but not the effect of phylogenetic correlation
+modelTMB_pcoa_rm_bc_1_sp <- glmmTMB(Target.axis~Region_migration_season+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+# third model without effect of host species and phylogenetic correlation
+modelTMB_pcoa_rm_bc_1_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+
+
+######################################
+#BRAY-CYRTIS AX2######################
+######################################
+DATAF_FILTER.t$Target.axis<-DATAF_FILTER.t$Axis.2bray #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+
+modelTMB_pcoa_rm_bc_2 <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE) 
+
+modelTMB_pcoa_rm_bc_2_sp <- glmmTMB(Target.axis~Region_migration_season+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+
+modelTMB_pcoa_rm_bc_2_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+
+###################################
+#Jaccard AX1######################
+##################################
+DATAF_FILTER.t$Target.axis<-DATAF_FILTER.t$Axis.1jac #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+
+modelTMB_pcoa_rm_ja_1 <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE) 
+
+modelTMB_pcoa_rm_ja_1_sp <- glmmTMB(Target.axis~Region_migration_season+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+
+modelTMB_pcoa_rm_ja_1_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+
+######################################
+#Jaccard AX2######################
+######################################
+DATAF_FILTER.t$Target.axis<-DATAF_FILTER.t$Axis.2jac #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_ja_2 <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE) 
+
+modelTMB_pcoa_rm_ja_2_sp <- glmmTMB(Target.axis~Region_migration_season+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+
+modelTMB_pcoa_rm_ja_2_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+##################################
+###Weighted UniFrac AX1#######
+##################################
+ 
+DATAF_FILTER.t$Target.axis<-DATAF_FILTER.t$Axis.1wu #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_wu_1 <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE) 
+
+modelTMB_pcoa_rm_wu_1_sp <- glmmTMB(Target.axis~Region_migration_season+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+
+modelTMB_pcoa_rm_wu_1_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+##################################
+###Weighted UniFrac AX2#######
+##################################
+DATAF_FILTER.t$Target.axis<-DATAF_FILTER.t$Axis.2wu #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_wu_2 <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE) 
+
+modelTMB_pcoa_rm_wu_2_sp <- glmmTMB(Target.axis~Region_migration_season+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+
+modelTMB_pcoa_rm_wu_2_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+
+##################################
+###UnWeighted UniFrac AX1#######
+##################################
+DATAF_FILTER.t$Target.axis<-DATAF_FILTER.t$Axis.1uu  #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_uu_1 <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE) 
+
+modelTMB_pcoa_rm_uu_1_sp <- glmmTMB(Target.axis~Region_migration_season+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+
+modelTMB_pcoa_rm_uu_1_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+##################################
+###UnWeighted UniFrac AX2#######
+##################################
+DATAF_FILTER.t$Target.axis<-DATAF_FILTER.t$Axis.2uu #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_uu_2 <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE) 
+
+modelTMB_pcoa_rm_uu_2_sp <- glmmTMB(Target.axis~Region_migration_season+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+
+modelTMB_pcoa_rm_uu_2_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE)
+```
+
+# Tables for mixed model from the previous section
+
+```{r , warning=F, message=F }
+#TABLE FOR ESTIMATES
+DF1_bc_1<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_bc_1)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_bc_1)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_bc_1),rep("",4)))
+DF1_bc_2<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_bc_2)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_bc_2)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_bc_2),rep("",4)))
+DF1_ja_1<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_ja_1)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_ja_1)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_ja_2),rep("",4)))
+DF1_ja_2<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_ja_2)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_ja_2)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_ja_2),rep("",4)))
+DF1_wu_1<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_wu_1)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_wu_1)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_wu_1),rep("",4)))
+DF1_wu_2<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_wu_2)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_wu_2)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_wu_2),rep("",4)))
+DF1_uu_1<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_uu_1)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_uu_1)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_uu_1),rep("",4)))
+DF1_uu_2<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_uu_2)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_uu_2)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_uu_2),rep("",4)))
+
+DF12_vse<-data.frame(response=c("BC1",rep("",4),"JA1",rep("",4),"WU1",rep("",4),"UU1",rep("",4),
+                                "BC2",rep("",4),"JA2",rep("",4),"WU2",rep("",4),"UU2",rep("",4)),
+                     rbind(DF1_bc_1,DF1_ja_1,DF1_wu_1,DF1_uu_1,DF1_bc_2,DF1_ja_2,DF1_wu_2,DF1_uu_2))
+
+DF12_vse
+write.table(DF12_vse,"/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/DF12_vse_TMB_WUUUJABC_2.txt",sep="\t",quote = F,row.names = F)
+
+
+ANOVA.table<-data.frame(response=c("BC1",rep("",1),"JA1",rep("",1),"WU1",rep("",1),"UU1",rep("",1),
+                                "BC2",rep("",1),"JA2",rep("",1),"WU2",rep("",1),"UU2",rep("",1)),
+                        rbind(car::Anova(modelTMB_pcoa_rm_bc_1),car::Anova(modelTMB_pcoa_rm_ja_1),
+                              car::Anova(modelTMB_pcoa_rm_wu_1),car::Anova(modelTMB_pcoa_rm_uu_1),
+                              car::Anova(modelTMB_pcoa_rm_bc_2),car::Anova(modelTMB_pcoa_rm_ja_2),
+                              car::Anova(modelTMB_pcoa_rm_wu_2),car::Anova(modelTMB_pcoa_rm_uu_2)))
+ANOVA.table
+write.table(ANOVA.table,"/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/ANOVA.table_TMB_WUUUJABC_2.txt",sep="\t",quote = F,row.names = F)
+
+AIC_tab_pcoa_rm_PhySp<-rbind(c(AIC(modelTMB_pcoa_rm_bc_1),AIC(modelTMB_pcoa_rm_bc_1_sp),AIC(modelTMB_pcoa_rm_bc_1_not)),
+                            c(AIC(modelTMB_pcoa_rm_bc_2),AIC(modelTMB_pcoa_rm_bc_2_sp),AIC(modelTMB_pcoa_rm_bc_2_not)),
+                            c(AIC(modelTMB_pcoa_rm_ja_1),AIC(modelTMB_pcoa_rm_ja_1_sp),AIC(modelTMB_pcoa_rm_ja_1_not)),
+                            c(AIC(modelTMB_pcoa_rm_ja_2),AIC(modelTMB_pcoa_rm_ja_2_sp),AIC(modelTMB_pcoa_rm_ja_2_not)),
+                            c(AIC(modelTMB_pcoa_rm_wu_1),AIC(modelTMB_pcoa_rm_wu_1_sp),AIC(modelTMB_pcoa_rm_wu_1_not)),
+                            c(AIC(modelTMB_pcoa_rm_wu_2),AIC(modelTMB_pcoa_rm_wu_2_sp),AIC(modelTMB_pcoa_rm_wu_2_not)),
+                            c(AIC(modelTMB_pcoa_rm_uu_1),AIC(modelTMB_pcoa_rm_uu_1_sp),AIC(modelTMB_pcoa_rm_uu_1_not)),
+                            c(AIC(modelTMB_pcoa_rm_uu_2),AIC(modelTMB_pcoa_rm_uu_2_sp),AIC(modelTMB_pcoa_rm_uu_2_not))
+                            )
+
+row.names(AIC_tab_pcoa_rm_PhySp)<-c("bc_1","bc_2","ja_1","ja_2","wu_1","wu_2","uu_1","uu_2")
+
+W_tab_pcoa_rm_PhySp<-t(apply(AIC_tab_pcoa_rm_PhySp,1,function(x) 
+                   (exp( -0.5 *(x-min(x))))/sum(exp( -0.5 *(x-min(x))))))
+
+AIC_W.tab_pcoa_rm_PhySp<-cbind(AIC_tab_pcoa_rm_PhySp[,1],W_tab_pcoa_rm_PhySp[,1],
+                               AIC_tab_pcoa_rm_PhySp[,2],W_tab_pcoa_rm_PhySp[,2],
+                               AIC_tab_pcoa_rm_PhySp[,3],W_tab_pcoa_rm_PhySp[,3])
+
+colnames(AIC_W.tab_pcoa_rm_PhySp)<-c("Phylogeny + Species (AIC)","Phylogeny + Species (AICw)",
+                              "Species (AIC)","Species (AICw)",
+                              "No random var. (AIC)","No random var. (AICw)")
+
+AIC_W.tab_pcoa_rm_PhySp
+write.table(AIC_W.tab_pcoa_rm_PhySp,"/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/AIC.table_TMB_WUUUJABC_2.txt",sep="\t",quote = F,row.names = F)
+
+```
+
+
+# Posthoc tests + boxplots for PCoA axes scores
+
+```{r , warning=F, message=F ,fig.width=10,fig.height=10}
+
+library(multcomp)
+#posthoc tests + letters
+TUK<- glht(modelTMB_pcoa_rm_bc_1,  mcp(Region_migration_season = "Tukey"))
+LET_BC1<-cld(TUK)
+TUK<- glht(modelTMB_pcoa_rm_bc_2,  mcp(Region_migration_season = "Tukey"))
+LET_BC2<-cld(TUK)
+TUK<- glht(modelTMB_pcoa_rm_ja_1,  mcp(Region_migration_season = "Tukey"))
+LET_JA1<-cld(TUK)
+TUK<- glht(modelTMB_pcoa_rm_ja_2,  mcp(Region_migration_season = "Tukey"))
+LET_JA2<-cld(TUK)
+TUK<- glht(modelTMB_pcoa_rm_wu_1,  mcp(Region_migration_season = "Tukey"))
+LET_WU1<-cld(TUK)
+TUK<- glht(modelTMB_pcoa_rm_wu_2,  mcp(Region_migration_season = "Tukey"))
+LET_WU2<-cld(TUK)
+TUK<- glht(modelTMB_pcoa_rm_uu_1,  mcp(Region_migration_season = "Tukey"))
+LET_UU1<-cld(TUK)
+TUK<- glht(modelTMB_pcoa_rm_uu_2,  mcp(Region_migration_season = "Tukey"))
+LET_UU2<-cld(TUK)
+
+LET_BC1b<-data.frame(Letters=LET_BC1$mcletters$Letters,
+                     Region_migration_season=names(LET_BC1$mcletters$Letters),
+                     Dissimilarity="Bray - Curtis (1st ax.)",
+                     Scores=0.5)
+LET_BC2b<-data.frame(Letters=LET_BC2$mcletters$Letters,
+                     Region_migration_season=names(LET_BC2$mcletters$Letters),
+                     Dissimilarity="Bray - Curtis (2nd ax.)",
+                     Scores=0.5)
+LET_JA1b<-data.frame(Letters=LET_JA1$mcletters$Letters,
+                     Region_migration_season=names(LET_JA1$mcletters$Letters),
+                     Dissimilarity="Jaccard (1st ax.)",
+                     Scores=0.5)
+LET_JA2b<-data.frame(Letters=LET_JA2$mcletters$Letters,
+                     Region_migration_season=names(LET_JA2$mcletters$Letters),
+                     Dissimilarity="Jaccard (2nd ax.)",
+                     Scores=0.5)
+LET_WU1b<-data.frame(Letters=LET_WU1$mcletters$Letters,
+                     Region_migration_season=names(LET_WU1$mcletters$Letters),
+                     Dissimilarity="W. UniFrac (1st ax.)",
+                     Scores=0.5)
+LET_WU2b<-data.frame(Letters=LET_WU2$mcletters$Letters,
+                     Region_migration_season=names(LET_WU2$mcletters$Letters),
+                     Dissimilarity="W. UniFrac (2nd ax.)",
+                     Scores=0.5)
+LET_UU1b<-data.frame(Letters=LET_UU1$mcletters$Letters,
+                     Region_migration_season=names(LET_UU1$mcletters$Letters),
+                     Dissimilarity="U. UniFrac (1st ax.)",
+                     Scores=0.5)
+LET_UU2b<-data.frame(Letters=LET_UU2$mcletters$Letters,
+                     Region_migration_season=names(LET_UU2$mcletters$Letters),
+                     Dissimilarity="U. UniFrac (2nd ax.)",
+                     Scores=0.5)
+
+LETT_ALL<-rbind(LET_BC1b,LET_BC2b,LET_JA1b,LET_JA2b,LET_WU1b,LET_WU2b,LET_UU1b,LET_UU2b)
+
+
+DFplot<-data.frame(Scores=c(DATAF_FILTER.t$Axis.1bray,DATAF_FILTER.t$Axis.2bray,
+                            DATAF_FILTER.t$Axis.1jac,DATAF_FILTER.t$Axis.2jac,
+                            DATAF_FILTER.t$Axis.1wu,DATAF_FILTER.t$Axis.2wu,
+                            DATAF_FILTER.t$Axis.1uu,DATAF_FILTER.t$Axis.2uu),
+                   Region_migration_season=rep(DATAF_FILTER.t$Region_migration_season,8),
+                   Diet=rep(DATAF_FILTER.t$diet,8),
+                   Dissimilarity=rep(c("Bray - Curtis (1st ax.)","Bray - Curtis (2nd ax.)",
+                                       "Jaccard (1st ax.)","Jaccard (2nd ax.)",
+                                       "W. UniFrac (1st ax.)","W. UniFrac (2nd ax.)",
+                                       "U. UniFrac (1st ax.)","U. UniFrac (2nd ax.)"),each=length(DATAF_FILTER.t$Axis.2wu)),
+                   rep(DATAF_FILTER.t$diet,8))
+
+
+
+#plot scores vs zone
+gg<-ggplot(data = DFplot,aes(x=Region_migration_season,y=Scores))+
+  geom_boxplot(outlier.shape = NA)+geom_jitter(alpha=0.3,size=0.4,shape=16)+facet_wrap(~Dissimilarity,nrow=2,scales="free")+theme_bw()
+gg<-gg+ theme(axis.text.x = element_text(angle = 90, hjust = 1,size=7),
+              axis.title.x = element_text(size=0),
+              axis.title.y=element_text(size=7),
+              axis.text=element_text(size=7),
+              plot.title = element_text(size = 7),
+              strip.text = element_text(angle = 0,size = 7),
+              plot.margin=unit(c(0.1,0.1,0.1,0.1), "cm"))
+gg<-gg+geom_text(data = LETT_ALL,aes(label=Letters))
+ggsave(gg,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/PCOA_axes_boxplot.pdf",width = 16, height = 16, units = "cm")
+gg
+
+#plot scores vs zone (small version without UniFrac)
+unique(DFplot$Dissimilarity)
+DFplot.sub<-DFplot[-grep("UniFrac",DFplot$Dissimilarity),]
+LETT_ALL.sub<-LETT_ALL[-grep("UniFrac",LETT_ALL$Dissimilarity),]
+
+#rename axes lables
+DFplot.sub$Region_migration_season
+levels(DFplot.sub$Region_migration_season)<-c("tropical (dry s.)","tropical (rainy s.)","temperate (resid./short dist.)", "temperate (trans-Saharan)")
+LETT_ALL.sub$Region_migration_season<-gsub("Tropical_Dry","tropical (dry s.)",LETT_ALL.sub$Region_migration_season)
+LETT_ALL.sub$Region_migration_season<-gsub("Tropical_Wet","tropical (rainy s.)",LETT_ALL.sub$Region_migration_season)
+LETT_ALL.sub$Region_migration_season<-gsub("Temperate_Transaharan","temperate (trans-Saharan)",LETT_ALL.sub$Region_migration_season)
+LETT_ALL.sub$Region_migration_season<-gsub("Temperate_Resid.Short","temperate (resid./short dist.)",LETT_ALL.sub$Region_migration_season)
+
+# final plot
+gg<-ggplot(data = DFplot.sub,aes(x=Region_migration_season,y=Scores))+
+  geom_boxplot(outlier.shape = NA)+geom_jitter(alpha=0.3,size=0.,shape=16)+facet_wrap(~Dissimilarity,nrow=2,scales="free_y")+theme_bw()
+gg<-gg+ theme(axis.text.x = element_text(angle = 90, hjust = 1,size=7),
+              axis.title.x = element_text(size=0),
+              axis.title.y=element_text(size=7),
+              axis.text=element_text(size=7),
+              plot.title = element_text(size = 7),
+              strip.text = element_text(angle = 0,size = 7),
+              plot.margin=unit(c(0.1,0.1,0.1,0.1), "cm"))
+gg<-gg+geom_text(data = LETT_ALL.sub,aes(label=Letters),size=2.5)
+ggsave(gg,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/PCOA_axes_boxplot_v2.pdf",width = 8, height = 10, units = "cm")
+gg
+```
+
+
+#Plots for PCoA Scores vs. diet
+
+```{r , warning=F, message=F ,fig.height=15,fig.width=10}
+RESP<-ANOVA.table$response
+RESP<-RESP[RESP!=""]
+P_DIET<-ANOVA.table[,"Pr..Chisq."][grep("diet",rownames(ANOVA.table))]
+P_DIET<-round(P_DIET,4)
+P_DIET<-paste("p =",P_DIET,sep=" ")
+
+RESP<-gsub("BC","Bray - Curtis ",RESP)
+RESP<-gsub("JA","Jaccard ",RESP)
+RESP<-gsub("UU","U. UniFrac ",RESP)
+RESP<-gsub("WU","W. UniFrac ",RESP)
+RESP<-gsub("1","(1st ax.)",RESP)
+RESP<-gsub("2","(2nd ax.)",RESP)
+
+SIGNIF<-data.frame(Dissimilarity=RESP,P_DIET)
+SIGNIF$Scores<-c(0.45,0.35,0.45,0.45,0.45,0.30,0.45,0.45)
+SIGNIF$Diet<-0.2
+
+#version 0 - separate facets for each host species and dissimilaritites
+ggplot(DFplot,aes(y=Scores,x=Diet,color=Region_migration_season))+geom_point(size=1, alpha=0.5)+facet_grid(Dissimilarity~Region_migration_season,scales = "free_y")+theme_bw()
+
+#version 1 - separate facets for dissimilaritites
+gg<-ggplot(DFplot,aes(y=Scores,x=Diet))+geom_jitter(aes(color=Region_migration_season),size=0.2, alpha=0.5,height = 0,width = 0.02)+facet_wrap(.~Dissimilarity,scales = "free_y",nrow = 4)+theme_bw()
+
+gg<-gg+geom_text(data = SIGNIF,aes(label=P_DIET),size=2)+
+  theme(legend.title = element_blank(),legend.position = "bottom")+
+  guides(col=guide_legend(ncol=2,byrow=F))
+gg<-SMALL_PLOT.2(gg)
+ggsave(gg,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/PCOA_diet.pdf",width = 8, height = 16, units = "cm") 
+gg
+
+#version 2 - without UniFrac
+SIGNIF.sub<-SIGNIF[-grep("UniFrac",SIGNIF$Dissimilarity),]
+DFplot.sub<-DFplot[-grep("UniFrac",DFplot$Dissimilarity),]
+
+levels(DFplot.sub$Region_migration_season)<-c("tropical (dry s.)","tropical (rainy s.)","temperate (resid./short dist.)", "temperate (trans-Saharan)")
+DFplot.sub$Region_migration_season <- factor(DFplot.sub$Region_migration_season,
+                                                     levels = c("temperate (resid./short dist.)", 
+                                                                "temperate (trans-Saharan)", 
+                                                                "tropical (dry s.)",
+                                                                "tropical (rainy s.)"))
+
+
+gg<-ggplot(DFplot.sub,aes(y=Scores,x=Diet))+geom_jitter(aes(color=Region_migration_season),size=0.2, alpha=0.5,height = 0,width = 0.02)+facet_wrap(.~Dissimilarity,scales = "free_y",nrow = 2)+scale_color_manual( values =c20[1:4])+theme_bw()
+
+gg<-gg+geom_text(data = SIGNIF.sub,aes(label=P_DIET),size=2)+
+  theme(legend.title = element_blank(),legend.position = "bottom")+
+  guides(col=guide_legend(ncol=2,byrow=F))
+gg<-SMALL_PLOT.2(gg)
+ggsave(gg,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/PCOA_diet.v2.pdf",width = 8, height = 8, units = "cm") 
+gg
+
+```
+
+# Bootsrap appoach comparing interspecific GM differentiation between vs. within host categories
+
+```{r message=FALSE, , warning=F}
+library(reshape2)
+library(boot)
+library(simpleboot)
+
+SD<-sample_data(PHYLOSEQ.R_trans.sub)
+class(SD)<-"data.frame"
+
+DIST=bray
+SD=SD
+EXCLUDE_SAME="GEN_SPEC"
+FOR_WITHIN="Region_migration_season"
+FOR_WITHIN_levels=c("Tropical_Dry","Temperate_Transaharan")
+nperm=1000
+
+
+
+#this function [1] takes the whole dissimilarity matrix
+#[2] excludes dissimilarities with no information value (within species) and
+#[3] and test using bootrap approach (two.boot function), if dissimilarities within two specific levels of variable
+#(Region_migration_season) are lower than between two categories 
+#(e.g., within Tropical_Dry+within Temperate_Transaharan < between Tropical_Dry vs. Temperate_Transaharan)
+WITHIN_BETWEEN<-function(DIST,SD,EXCLUDE_SAME,FOR_WITHIN,FOR_WITHIN_levels,nperm=1000){
+DIST.m<-as.matrix(DIST)
+DIST.m[upper.tri(DIST.m,diag =)]<-NA
+DIST.long<-melt(DIST.m)
+
+#Filter distance (long format)
+DIST.long<-DIST.long[!is.na(DIST.long$value),]
+DIST.long<-DIST.long[DIST.long$Var1!=DIST.long$Var2,]
+
+#Arrange SD
+SD.var1<-SD
+SD.var1$Var1<-rownames(SD.var1)
+SD.var2<-SD
+SD.var2$Var2<-rownames(SD.var2)  
+
+SD.var1<-join(DIST.long[,c(1,3)],SD.var1)
+SD.var2<-join(DIST.long[,c(2,3)],SD.var2)
+
+##########################
+#Observed dissimilarities#
+##########################
+
+#exclude within EXCLUDE_SAME
+FILTER<-SD.var1[,EXCLUDE_SAME]!=SD.var2[,EXCLUDE_SAME]
+SD.var1<-SD.var1[FILTER,]
+SD.var2<-SD.var2[FILTER,]
+
+#exclude nontarget
+FILTER1<-SD.var1[,FOR_WITHIN]%in%FOR_WITHIN_levels
+FILTER2<-SD.var2[,FOR_WITHIN]%in%FOR_WITHIN_levels
+FILTER<-FILTER1+FILTER2==2
+SD.var1<-SD.var1[FILTER,]
+SD.var2<-SD.var2[FILTER,]
+SD.var1$SAME<-ifelse(SD.var1[,FOR_WITHIN]==SD.var2[,FOR_WITHIN],"within","between")
+
+SD.var1$EVAL<-paste(SD.var1[,EXCLUDE_SAME],SD.var2[,EXCLUDE_SAME],SD.var1$SAME,sep="~")
+
+#averages 
+SD.var1.unique<-SD.var1[duplicated(SD.var1$EVAL)==F,]
+TAPPLY<-tapply(SD.var1$value, SD.var1$EVAL, mean)
+DF.ADD<-data.frame(EVAL=names(TAPPLY),value2=TAPPLY)
+SD.var1.unique<-join(SD.var1.unique,DF.ADD)
+
+WITHIN_observed<-SD.var1.unique$value2[SD.var1.unique$SAME=="within"]
+BETWEEN_observed<-SD.var1.unique$value2[SD.var1.unique$SAME=="between"]
+
+summary(WITHIN_observed)
+summary(BETWEEN_observed)
+##########################
+##BOOTSTRAP CONFIDENCE####
+##########################
+
+samplemean <- function(x, d) {
+return(mean(x[d]))
+}
+
+bootstrapped <- two.boot(BETWEEN_observed,WITHIN_observed,  mean, nperm)
+bootstrapped_med <- two.boot(BETWEEN_observed,WITHIN_observed,  median, nperm)
+
+WITHIN.boot = boot(WITHIN_observed, samplemean, R=nperm)
+WITHIN.boot.ci = boot.ci(WITHIN.boot, type="basic")
+
+BETWEEN.boot = boot(BETWEEN_observed, samplemean, R=nperm)
+BETWEEN.boot.ci = boot.ci(BETWEEN.boot, type="basic")
+
+DIFF.boot=bootstrapped$t
+DIFF.boot.mean=bootstrapped$t0
+
+DIFF_med.boot=bootstrapped_med$t
+DIFF_med.boot.mean=bootstrapped_med$t0
+
+###################
+#permutations test#
+###################
+MORE<-as.numeric()
+for(i in 1:nperm){
+  SD.var1.p<-SD.var1
+  SD.var2.p<-SD.var2
+
+  SD.var1.p[,FOR_WITHIN]<-sample(SD.var1.p[,FOR_WITHIN])
+  SD.var2.p[,FOR_WITHIN]<-sample(SD.var2.p[,FOR_WITHIN])
+
+  #exclude nontarget
+  SAME<-ifelse(SD.var1.p[,FOR_WITHIN]==SD.var2.p[,FOR_WITHIN],"within","between")
+
+  WITHIN_permut<-SD.var1.p$value[SAME=="within"]
+  BETWEEN_permut<-SD.var1.p$value[SAME=="between"]
+
+  MORE[i]<-(mean(BETWEEN_observed)-mean(WITHIN_observed))<(mean(BETWEEN_permut)<mean(WITHIN_permut))
+}
+
+PERM_p<-sum(c(1,MORE))/length(c(1,MORE))
+
+RESULTS<-list(WITHIN_observed,BETWEEN_observed,
+              WITHIN.boot.ci,BETWEEN.boot.ci,PERM_p,
+              DIFF.boot,DIFF.boot.mean,
+              DIFF_med.boot,DIFF_med.boot.mean)
+
+names(RESULTS)<-c("WITHIN_observed","BETWEEN_observed","WITHIN.boot.ci",
+                  "BETWEEN.boot.ci","PERM_p",
+                  "DIFF.boot","DIFF.boot.mean",
+                  "DIFF_med.boot","DIFF_med.boot.mean")
+RESULTS
+
+}
+
+#JACCARD
+JA_WET_DRY<-WITHIN_BETWEEN(DIST=jac,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Wet","Tropical_Dry"),nperm=999)
+JA_MIGR_NONMIGR<-WITHIN_BETWEEN(DIST=jac,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Temperate_Transaharan","Temperate_Resid.Short"),nperm=999)
+JA_MIGR_RAINY<-WITHIN_BETWEEN(DIST=jac,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Temperate_Transaharan","Tropical_Wet"),nperm=999)
+JA_MIGR_DRY<-WITHIN_BETWEEN(DIST=jac,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Temperate_Transaharan","Tropical_Dry"),nperm=999)
+JA_NONMIGR_DRY<-WITHIN_BETWEEN(DIST=jac,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Dry","Temperate_Resid.Short"),nperm=999)
+JA_NONMIGR_RAINY<-WITHIN_BETWEEN(DIST=jac,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Wet","Temperate_Resid.Short"),nperm=999)
+
+#BRAY CURTIS
+BC_WET_DRY<-WITHIN_BETWEEN(DIST=bray,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Wet","Tropical_Dry"),nperm=999)
+BC_MIGR_NONMIGR<-WITHIN_BETWEEN(DIST=bray,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Temperate_Transaharan","Temperate_Resid.Short"),nperm=999)
+BC_MIGR_RAINY<-WITHIN_BETWEEN(DIST=bray,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Temperate_Transaharan","Tropical_Wet"),nperm=999)
+BC_MIGR_DRY<-WITHIN_BETWEEN(DIST=bray,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Dry","Temperate_Transaharan"),nperm=999)
+BC_NONMIGR_DRY<-WITHIN_BETWEEN(DIST=jac,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Dry","Temperate_Resid.Short"),nperm=999)
+BC_NONMIGR_RAINY<-WITHIN_BETWEEN(DIST=bray,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Wet","Temperate_Resid.Short"),nperm=999)
+
+#W UNF
+WU_WET_DRY<-WITHIN_BETWEEN(DIST=wu,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Wet","Tropical_Dry"),nperm=999)
+WU_MIGR_NONMIGR<-WITHIN_BETWEEN(DIST=wu,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Temperate_Transaharan","Temperate_Resid.Short"),nperm=999)
+WU_MIGR_RAINY<-WITHIN_BETWEEN(DIST=wu,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Temperate_Transaharan","Tropical_Wet"),nperm=999)
+WU_MIGR_DRY<-WITHIN_BETWEEN(DIST=wu,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Dry","Temperate_Transaharan"),nperm=999)
+WU_NONMIGR_DRY<-WITHIN_BETWEEN(DIST=wu,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Dry","Temperate_Resid.Short"),nperm=999)
+WU_NONMIGR_RAINY<-WITHIN_BETWEEN(DIST=wu,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Wet","Temperate_Resid.Short"),nperm=999)
+
+#U UNF
+UU_WET_DRY<-WITHIN_BETWEEN(DIST=uu,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Wet","Tropical_Dry"),nperm=999)
+UU_MIGR_NONMIGR<-WITHIN_BETWEEN(DIST=uu,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Temperate_Transaharan","Temperate_Resid.Short"),nperm=999)
+UU_MIGR_RAINY<-WITHIN_BETWEEN(DIST=uu,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Temperate_Transaharan","Tropical_Wet"),nperm=999)
+UU_MIGR_DRY<-WITHIN_BETWEEN(DIST=uu,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Dry","Temperate_Transaharan"),nperm=999)
+UU_NONMIGR_DRY<-WITHIN_BETWEEN(DIST=uu,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Dry","Temperate_Resid.Short"),nperm=999)
+UU_NONMIGR_RAINY<-WITHIN_BETWEEN(DIST=uu,SD=SD,EXCLUDE_SAME="GEN_SPEC",FOR_WITHIN="Region_migration_season",FOR_WITHIN_levels=c("Tropical_Wet","Temperate_Resid.Short"),nperm=999)
+
+####DATAFRAME RESULTS#########
+
+TEST<-JA_WET_DRY
+EXTRACT_VALS<-function(TEST){
+RESULTS<-as.numeric()
+RESULTS[1]=mean(TEST$WITHIN_observed)
+RESULTS[2]=mean(TEST$BETWEEN_observed)
+RESULTS[3:4]=TEST$WITHIN.boot.ci$basic[4:5]
+RESULTS[5:6]=TEST$BETWEEN.boot.ci$basic[4:5]
+RESULTS[7]=TEST$PERM_p
+RESULTS[8]=quantile(TEST$DIFF.boot, 0.05)
+RESULTS[9]=quantile(TEST$DIFF.boot, 0.95)
+RESULTS[10]=TEST$DIFF.boot.mean
+RESULTS[11]=quantile(TEST$DIFF_med.boot, 0.05)
+RESULTS[12]=quantile(TEST$DIFF_med.boot, 0.95)
+RESULTS[13]=TEST$DIFF_med.boot.mean
+names(RESULTS)<-c("Within.mean","Between.mean","Within.L.ci","Within.H.ci",
+                  "Between.L.ci","Between.H.ci","perm_p",
+                  "Diff.L","Diff.H","Diff.mean",
+                  "Diff.L.med","Diff.H.med","Diff.med")
+
+RESULTS}
+
+MAT<-rbind(EXTRACT_VALS(JA_WET_DRY),
+EXTRACT_VALS(JA_MIGR_NONMIGR),
+EXTRACT_VALS(JA_MIGR_RAINY),
+EXTRACT_VALS(JA_MIGR_DRY),
+EXTRACT_VALS(JA_NONMIGR_DRY),
+EXTRACT_VALS(JA_NONMIGR_RAINY),
+EXTRACT_VALS(BC_WET_DRY),
+EXTRACT_VALS(BC_MIGR_NONMIGR),
+EXTRACT_VALS(BC_MIGR_RAINY),
+EXTRACT_VALS(BC_MIGR_DRY),
+EXTRACT_VALS(BC_NONMIGR_DRY),
+EXTRACT_VALS(BC_NONMIGR_RAINY),
+EXTRACT_VALS(WU_WET_DRY),
+EXTRACT_VALS(WU_MIGR_NONMIGR),
+EXTRACT_VALS(WU_MIGR_RAINY),
+EXTRACT_VALS(WU_MIGR_DRY),
+EXTRACT_VALS(WU_NONMIGR_DRY),
+EXTRACT_VALS(WU_NONMIGR_RAINY),
+EXTRACT_VALS(UU_WET_DRY),
+EXTRACT_VALS(UU_MIGR_NONMIGR),
+EXTRACT_VALS(UU_MIGR_RAINY),
+EXTRACT_VALS(UU_MIGR_DRY),
+EXTRACT_VALS(UU_NONMIGR_DRY),
+EXTRACT_VALS(UU_NONMIGR_RAINY))
+
+PERM_DF<-data.frame(DIST=rep(c("Jaccard","Bray","W_UniFrac","U_UniFrac"),each=6),
+                    Contrast=rep(c("Wet_Dry","Migr_Nonmigr","Migr_Rainy","Migr_Dry","Nonmigr_Dry","Nonmigr_Rainy"),4),
+                    MAT)
+PERM_DF$Contrast<-factor(PERM_DF$Contrast,levels = c("Migr_Dry","Nonmigr_Dry","Migr_Rainy","Nonmigr_Rainy","Migr_Nonmigr","Wet_Dry"))
+
+dodge <- position_dodge(width=0.5)
+gg<-ggplot(PERM_DF,aes(x=Contrast,y=Diff.mean))+geom_point()+
+  geom_errorbar(aes(ymin=Diff.L, ymax=Diff.H), width=0.5,position=dodge)+
+  facet_grid(DIST~.,scales = "free_y")+theme_bw()
+gg.s<-SMALL_PLOT.2(gg)+theme(axis.text = element_text(angle = 90,hjust = 1,vjust = 0),axis.title.x = element_blank())
+
+ggsave(gg.s,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/within_between.pdf",
+       width = 8, height = 12, units = "cm")
+
+gg.s
+PERM_DF.sub<-PERM_DF[-grep("Uni",PERM_DF$DIST),]
+dodge <- position_dodge(width=0.5)
+levels(PERM_DF.sub$Contrast)
+levels(PERM_DF.sub$Contrast)<-c("Temp. (trans-S.) x Trop (dry s.)",
+                                "Temp. (resid/short dist.) x Trop (dry s.)",
+                                "Temp. (trans-s.) x Trop (rainy s.)",
+                                "Temp. (resid/short dist.) x Trop (rainy s.)",
+                                "Temp. (trans-S.) x Temp. (resid/short dist.)",
+                                "Trop (dry s.) x Trop (rainy s.)")
+
+
+gg<-ggplot(PERM_DF.sub,aes(x=Contrast,y=Diff.mean))+geom_point(size=1)+
+  geom_errorbar(aes(ymin=Diff.L, ymax=Diff.H), width=0.5,position=dodge)+
+  facet_grid(DIST~.,scales = "free_y")+theme_bw()
+gg.s<-SMALL_PLOT.2(gg)+theme(axis.text = element_text(angle = 0,hjust = 1,vjust = 0))
+
+gg.s<-gg.s+geom_hline(yintercept = 0,linetype = 2)
+
+gg.s<-gg.s+coord_flip()
+gg.s<-gg.s+ylab("Dissimilarity")+theme(axis.title.y = element_blank())
+ggsave(gg.s,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/within_between_v2.pdf",
+       width = 8, height = 7, units = "cm")
+
+gg.s
+
+```
+
+# GLMM on PCoA axes for a subset of temeperate species 
+## preparation of data frames
+```{r , warning=F, message=F }
+
+#subset phylogeny
+Temperate_LS<-prune_samples(sample_data(PH_filtered)$region=="temperate",PH_filtered)
+PHYLOSEQ.R_trans_TEMP<-transform_sample_counts(Temperate_LS, function(x) x/sum(x))
+PHYLOSEQ.R_rare_TEMP<-rarefy_even_depth(Temperate_LS)
+
+#calculate dissimilarities
+wu_TEMP<-UniFrac(PHYLOSEQ.R_trans_TEMP,weighted=T,parallel =T)
+uu_TEMP<-UniFrac(PHYLOSEQ.R_rare_TEMP,weighted=F,parallel =T)
+bray_TEMP<-vegdist(otu_table(PHYLOSEQ.R_trans_TEMP)^0.5,method="bray")
+jac_TEMP<-vegdist(data.frame(otu_table(PHYLOSEQ.R_rare_TEMP)),method="jaccard",binary = T)
+
+#fit ordination
+wu.ord<-ordinate(Temperate_LS,method="PCoA",distance=wu_TEMP)
+uu.ord<-ordinate(Temperate_LS,method="PCoA",distance=uu_TEMP)
+bray.ord<-ordinate(Temperate_LS,method="PCoA",distance=bray_TEMP)
+jac.ord<-ordinate(Temperate_LS,method="PCoA",distance=jac_TEMP)
+
+#construction of PCoA plots
+p.wu<-plot_ordination(Temperate_LS,wu.ord,  type = "samples",
+                      color = "Region_migration_season",axes = 1:2)+ggtitle("A) weigted UniFrac")+theme_bw()
+p.uu<-plot_ordination(Temperate_LS,uu.ord,  type = "samples",
+                      color = "Region_migration_season",axes = 1:2)+ggtitle("B) unweigted UniFrac")+theme_bw()
+p.bc<-plot_ordination(Temperate_LS,bray.ord,  type = "samples",
+                      color = "Region_migration_season",axes = 1:2)+ggtitle("C) Bray-Curtis")+theme_bw()
+p.ja<-plot_ordination(Temperate_LS,jac.ord,  type = "samples",
+                      color = "Region_migration_season",axes = 1:2)+ggtitle("D) Jaccard")+theme_bw()
+
+#adjust plotting characters
+p.wu$layers <- p.wu$layers[-1]
+p.uu$layers <- p.uu$layers[-1]
+p.bc$layers <- p.bc$layers[-1]
+p.ja$layers <- p.ja$layers[-1]
+
+p.wu<-p.wu + geom_point(size=1,alpha=0.5)+scale_color_manual(values =c20[1:4])
+p.uu<-p.uu + geom_point(size=1,alpha=0.5)+scale_color_manual(values =c20[1:4])
+p.bc<-p.bc + geom_point(size=1,alpha=0.5)+scale_color_manual(values =c20[1:4])
+p.ja<-p.ja + geom_point(size=1,alpha=0.5)+scale_color_manual(values =c20[1:4])
+
+p.wu.LS<-p.wu+ggtitle("A) weighted UniFrac")
+p.uu.LS<-p.uu+ggtitle("B) unweigted UniFrac")
+p.bc.LS<-p.bc+ggtitle("C) Bray-Curtis")
+p.ja.LS<-p.ja+ggtitle("D) Jaccard")
+
+p.wu.LS<-SMALL_PLOT(p.wu.LS)
+p.uu.LS<-SMALL_PLOT(p.uu.LS)
+p.bc.LS<-SMALL_PLOT(p.bc.LS)
+p.ja.LS<-SMALL_PLOT(p.ja.LS)
+
+GRID<-ggpubr::ggarrange(p.bc.LS,p.ja.LS,p.wu.LS,p.uu.LS,
+                        ncol = 2,nrow = 2,common.legend = T,legend="bottom")
+GRID
+
+#PCoA ordination for the subset of tempeare birds
+wu.pc_TEMP<-pcoa(wu_TEMP,correction = "cailliez")$vectors
+uu.pc_TEMP<-pcoa(uu_TEMP,correction = "cailliez")$vectors
+jac.pc_TEMP<-pcoa(jac_TEMP,correction = "cailliez")$vectors
+bray.pc_TEMP<-pcoa(bray_TEMP,correction = "cailliez")$vectors
+
+colnames(wu.pc_TEMP)<-paste(colnames(wu.pc_TEMP),"wu",sep="")
+colnames(uu.pc_TEMP)<-paste(colnames(uu.pc_TEMP),"uu",sep="")
+colnames(jac.pc_TEMP)<-paste(colnames(jac.pc_TEMP),"jac",sep="")
+colnames(bray.pc_TEMP)<-paste(colnames(bray.pc_TEMP),"bray",sep="")
+
+SD_TEMP<-sample_data(Temperate_LS)
+SD_TEMP<-data.frame(SD_TEMP)
+DATAF_FILTER.t_TEMP<-SD_TEMP
+DATAF_FILTER.t_TEMP$SPECIES<-as.factor(DATAF_FILTER.t_TEMP$species)
+DATAF_FILTER.t_TEMP$phylo<-as.factor(DATAF_FILTER.t_TEMP$species)
+DATAF_FILTER.t_TEMP<-data.frame(DATAF_FILTER.t_TEMP,wu.pc_TEMP[,1:2],uu.pc_TEMP[,1:2],jac.pc_TEMP[,1:2],bray.pc_TEMP[,1:2])
+
+#subset phylogeny
+FILTER<-(setdiff(TREE$ tip.label,DATAF_FILTER.t_TEMP$SPECIES))
+TREE2<-drop.tip(TREE,FILTER)
+
+```
+
+# GLMM on PCoA axes for a subset of temeperate species 
+# fitting models
+```{r , warning=F, message=F }
+######################################
+#BRAY-CURTIS AX1######################
+######################################
+
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.1bray #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_bc_1_TEMP <- glmmTMBphylo(Target.axis~Region_migration+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny 
+modelTMB_pcoa_rm_bc_1_TEMP_sp <- glmmTMB(Target.axis~Region_migration+diet + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_bc_1_TEMP_not <- glmmTMB(Target.axis~Region_migration+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+# print(summary(modelTMB_pcoa_rm_bc_1_TEMP))
+
+
+######################################
+#BRAY-CYRTIS AX2######################
+######################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.2bray #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_bc_2_TEMP <- glmmTMBphylo(Target.axis~Region_migration+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+# print(summary(modelTMB_pcoa_rm_bc_2_TEMP))
+#Without phylogeny 
+modelTMB_pcoa_rm_bc_2_TEMP_sp <- glmmTMB(Target.axis~Region_migration+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_bc_2_TEMP_not <- glmmTMB(Target.axis~Region_migration+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+######################################
+#Jaccard AX1######################
+######################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.1jac #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_ja_1_TEMP <- glmmTMBphylo(Target.axis~Region_migration+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+# print(summary(modelTMB_pcoa_rm_ja_1_TEMP))
+#Without phylogeny 
+modelTMB_pcoa_rm_ja_1_TEMP_sp <- glmmTMB(Target.axis~Region_migration+diet + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_ja_1_TEMP_not <- glmmTMB(Target.axis~Region_migration+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+######################################
+#Jaccard AX2######################
+######################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.2jac #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_ja_2_TEMP <- glmmTMBphylo(Target.axis~Region_migration+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+# print(summary(modelTMB_pcoa_rm_ja_2_TEMP))
+#Without phylogeny
+modelTMB_pcoa_rm_ja_2_TEMP_sp <- glmmTMB(Target.axis~Region_migration+diet + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_ja_2_TEMP_not <- glmmTMB(Target.axis~Region_migration+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+##################################
+###Weighted UniFrac AX1#######
+##################################
+ 
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.1wu #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_wu_1_TEMP <- glmmTMBphylo(Target.axis~Region_migration+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+# print(summary(modelTMB_pcoa_rm_wu_1_TEMP))
+#Without phylogeny 
+modelTMB_pcoa_rm_wu_1_TEMP_sp <- glmmTMB(Target.axis~Region_migration+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_wu_1_TEMP_not <- glmmTMB(Target.axis~Region_migration+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+##################################
+###Weighted UniFrac AX2#######
+##################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.2wu #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_wu_2_TEMP <- glmmTMBphylo(Target.axis~Region_migration+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+# print(summary(modelTMB_pcoa_rm_wu_2_TEMP))
+#Without phylogeny 
+modelTMB_pcoa_rm_wu_2_TEMP_sp <- glmmTMB(Target.axis~Region_migration+diet + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_wu_2_TEMP_not <- glmmTMB(Target.axis~Region_migration+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+##################################
+###UnWeighted UniFrac AX1#######
+##################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.1uu  #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_uu_1_TEMP <- glmmTMBphylo(Target.axis~Region_migration+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+# print(summary(modelTMB_pcoa_rm_uu_1_TEMP))
+#Without phylogeny
+modelTMB_pcoa_rm_uu_1_TEMP_sp <- glmmTMB(Target.axis~Region_migration+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+#Without phylogeny and species
+modelTMB_pcoa_rm_uu_1_TEMP_not <- glmmTMB(Target.axis~Region_migration+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+##################################
+###UnWeighted UniFrac AX2#######
+##################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.2uu #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_uu_2_TEMP <- glmmTMBphylo(Target.axis~Region_migration+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny 
+modelTMB_pcoa_rm_uu_2_TEMP_sp <- glmmTMB(Target.axis~Region_migration+diet + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_uu_2_TEMP_not <- glmmTMB(Target.axis~Region_migration+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+# print(summary(modelTMB_pcoa_rm_uu_2_TEMP))
+```
+
+
+#Tables for models from previous section
+
+```{r , warning=F, message=F }
+#parameter estimates
+DF1_bc_1_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_bc_1_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_bc_1_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_bc_1_TEMP),rep("",2)))
+
+
+DF1_bc_2_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_bc_2_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_bc_2_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_bc_2_TEMP),rep("",2)))
+
+
+DF1_ja_1_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_ja_1_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_ja_1_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_ja_1_TEMP),rep("",2)))
+
+
+DF1_ja_2_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_ja_2_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_ja_2_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_ja_2_TEMP),rep("",2)))
+
+
+DF1_wu_1_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_wu_1_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_wu_1_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_wu_1_TEMP),rep("",2)))
+
+
+DF1_wu_2_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_wu_2_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_wu_2_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_wu_2_TEMP),rep("",2)))
+
+
+DF1_uu_1_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_uu_1_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_uu_1_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_uu_1_TEMP),rep("",2)))
+
+
+DF1_uu_2_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_uu_2_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_uu_2_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_uu_2_TEMP),rep("",2)))
+
+DF_vse_TMB_PCOA_WUUUJABC_TEMP<-data.frame(rbind(DF1_wu_1_TEMP,DF1_wu_2_TEMP,DF1_uu_1_TEMP,DF1_uu_2_TEMP,DF1_ja_1_TEMP,DF1_ja_2_TEMP,DF1_bc_1_TEMP,DF1_bc_2_TEMP))
+
+DF_vse_TMB_PCOA_WUUUJABC_TEMP
+ 
+#write.table(DF_vse_TMB_PCOA_WUUUJABC__TEMP,"~/Statistika/Tropicke_temperatni/Figures_2/DF_vse_TMB_PCOA_WUUUJABC__TEMP.txt",sep="\t")
+
+#anova table
+ANOVA.table<-data.frame(response=c("BC1",rep("",1),"JA1",rep("",1),"WU1",rep("",1),"UU1",rep("",1),
+                                "BC2",rep("",1),"JA2",rep("",1),"WU2",rep("",1),"UU2",rep("",1)),
+                        rbind(car::Anova(modelTMB_pcoa_rm_bc_1_TEMP),car::Anova(modelTMB_pcoa_rm_ja_1_TEMP),
+                              car::Anova(modelTMB_pcoa_rm_wu_1_TEMP),car::Anova(modelTMB_pcoa_rm_uu_1_TEMP),
+                              car::Anova(modelTMB_pcoa_rm_bc_2_TEMP),car::Anova(modelTMB_pcoa_rm_ja_2_TEMP),
+                              car::Anova(modelTMB_pcoa_rm_wu_2_TEMP),car::Anova(modelTMB_pcoa_rm_uu_2_TEMP)))
+ANOVA.table
+ANOVA.table.TEMP<-ANOVA.table
+
+#AIC values for different model versions
+AIC_tab_pcoa_rm_TEMP_PhySp<-rbind(c(AIC(modelTMB_pcoa_rm_bc_1_TEMP),AIC(modelTMB_pcoa_rm_bc_1_TEMP_sp),AIC(modelTMB_pcoa_rm_bc_1_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_bc_2_TEMP),AIC(modelTMB_pcoa_rm_bc_2_TEMP_sp),AIC(modelTMB_pcoa_rm_bc_2_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_ja_1_TEMP),AIC(modelTMB_pcoa_rm_ja_1_TEMP_sp),AIC(modelTMB_pcoa_rm_ja_1_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_ja_2_TEMP),AIC(modelTMB_pcoa_rm_ja_2_TEMP_sp),AIC(modelTMB_pcoa_rm_ja_2_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_wu_1_TEMP),AIC(modelTMB_pcoa_rm_wu_1_TEMP_sp),AIC(modelTMB_pcoa_rm_wu_1_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_wu_2_TEMP),AIC(modelTMB_pcoa_rm_wu_2_TEMP_sp),AIC(modelTMB_pcoa_rm_wu_2_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_uu_1_TEMP),AIC(modelTMB_pcoa_rm_uu_1_TEMP_sp),AIC(modelTMB_pcoa_rm_uu_1_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_uu_2_TEMP),AIC(modelTMB_pcoa_rm_uu_2_TEMP_sp),AIC(modelTMB_pcoa_rm_uu_2_TEMP_not))
+                            )
+row.names(AIC_tab_pcoa_rm_TEMP_PhySp)<-c("bc_1","bc_2","ja_1","ja_2","wu_1","wu_2","uu_1","uu_2")
+
+W_tab_pcoa_rm_TEMP_PhySp<-t(apply(AIC_tab_pcoa_rm_TEMP_PhySp,1,function(x) 
+                   (exp( -0.5 *(x-min(x))))/sum(exp( -0.5 *(x-min(x))))))
+
+AIC_W.tab_pcoa_rm_TEMP_PhySp<-cbind(AIC_tab_pcoa_rm_TEMP_PhySp[,1],W_tab_pcoa_rm_TEMP_PhySp[,1],
+                                    AIC_tab_pcoa_rm_TEMP_PhySp[,2],W_tab_pcoa_rm_TEMP_PhySp[,2],
+                                    AIC_tab_pcoa_rm_TEMP_PhySp[,3],W_tab_pcoa_rm_TEMP_PhySp[,3])
+
+colnames(AIC_W.tab_pcoa_rm_TEMP_PhySp)<-c("Phylogeny + Species (AIC)","Phylogeny + Species (AICw)",
+                              "Species (AIC)","Species (AICw)",
+                              "No random var. (AIC)","No random var. (AICw)")
+
+AIC_W.tab_pcoa_rm_TEMP_PhySp
+
+```
+
+#Glmms for the subset of tropical hosts
+
+- calsulate dissimilarities and plot PCoA
+```{r , warning=F, message=F }
+########################
+#PCOA###################
+########################
+
+Temperate_LS<-prune_samples(sample_data(PH_filtered)$region!="temperate",PH_filtered)
+
+PHYLOSEQ.R_trans_TEMP<-transform_sample_counts(Temperate_LS, function(x) x/sum(x))
+PHYLOSEQ.R_rare_TEMP<-rarefy_even_depth(Temperate_LS)
+
+#calculate dissimilarities
+wu_TEMP<-UniFrac(PHYLOSEQ.R_trans_TEMP,weighted=T,parallel =T)
+uu_TEMP<-UniFrac(PHYLOSEQ.R_rare_TEMP,weighted=F,parallel =T)
+bray_TEMP<-vegdist(otu_table(PHYLOSEQ.R_trans_TEMP)^0.5,method="bray")
+jac_TEMP<-vegdist(data.frame(otu_table(PHYLOSEQ.R_rare_TEMP)),method="jaccard",binary = T)
+
+#fit ordination
+wu.ord<-ordinate(Temperate_LS,method="PCoA",distance=wu_TEMP)
+uu.ord<-ordinate(Temperate_LS,method="PCoA",distance=uu_TEMP)
+bray.ord<-ordinate(Temperate_LS,method="PCoA",distance=bray_TEMP)
+jac.ord<-ordinate(Temperate_LS,method="PCoA",distance=jac_TEMP)
+
+#construction of PCoA plots
+p.wu<-plot_ordination(Temperate_LS,wu.ord,  type = "samples",
+                      color = "Region_migration_season",axes = 3:4)+ggtitle("A) weigted UniFrac")+theme_bw()
+p.uu<-plot_ordination(Temperate_LS,uu.ord,  type = "samples",
+                      color = "Region_migration_season",axes = 3:4)+ggtitle("B) unweigted UniFrac")+theme_bw()
+p.bc<-plot_ordination(Temperate_LS,bray.ord,  type = "samples",
+                      color = "Region_migration_season",axes = 3:4)+ggtitle("C) Bray-Curtis")+theme_bw()
+p.ja<-plot_ordination(Temperate_LS,jac.ord,  type = "samples",
+                      color = "Region_migration_season",axes = 3:4)+ggtitle("D) Jaccard")+theme_bw()
+
+#adjust plotting characters
+p.wu$layers <- p.wu$layers[-1]
+p.uu$layers <- p.uu$layers[-1]
+p.bc$layers <- p.bc$layers[-1]
+p.ja$layers <- p.ja$layers[-1]
+
+p.wu<-p.wu + geom_point(size=1,alpha=0.5)+scale_color_manual(values =c20[1:4])
+p.uu<-p.uu + geom_point(size=1,alpha=0.5)+scale_color_manual(values =c20[1:4])
+p.bc<-p.bc + geom_point(size=1,alpha=0.5)+scale_color_manual(values =c20[1:4])
+p.ja<-p.ja + geom_point(size=1,alpha=0.5)+scale_color_manual(values =c20[1:4])
+
+p.wu.LS<-p.wu+ggtitle("A) weighted UniFrac")
+p.uu.LS<-p.uu+ggtitle("B) unweigted UniFrac")
+p.bc.LS<-p.bc+ggtitle("C) Bray-Curtis")
+p.ja.LS<-p.ja+ggtitle("D) Jaccard")
+
+p.wu.LS<-SMALL_PLOT(p.wu.LS)
+p.uu.LS<-SMALL_PLOT(p.uu.LS)
+p.bc.LS<-SMALL_PLOT(p.bc.LS)
+p.ja.LS<-SMALL_PLOT(p.ja.LS)
+
+GRID<-ggpubr::ggarrange(p.bc.LS,p.ja.LS,p.wu.LS,p.uu.LS,
+                        ncol = 2,nrow = 2,common.legend = T,legend="bottom")
+GRID
+
+#################################
+#Prepare data frames for GLMM####
+#################################
+
+wu.pc_TEMP<-pcoa(wu_TEMP,correction = "cailliez")$vectors
+uu.pc_TEMP<-pcoa(uu_TEMP,correction = "cailliez")$vectors
+jac.pc_TEMP<-pcoa(jac_TEMP,correction = "cailliez")$vectors
+bray.pc_TEMP<-pcoa(bray_TEMP,correction = "cailliez")$vectors
+
+colnames(wu.pc_TEMP)<-paste(colnames(wu.pc_TEMP),"wu",sep="")
+colnames(uu.pc_TEMP)<-paste(colnames(uu.pc_TEMP),"uu",sep="")
+colnames(jac.pc_TEMP)<-paste(colnames(jac.pc_TEMP),"jac",sep="")
+colnames(bray.pc_TEMP)<-paste(colnames(bray.pc_TEMP),"bray",sep="")
+
+
+SD_TEMP<-sample_data(Temperate_LS)
+SD_TEMP<-data.frame(SD_TEMP)
+DATAF_FILTER.t_TEMP<-SD_TEMP
+DATAF_FILTER.t_TEMP$SPECIES<-as.factor(DATAF_FILTER.t_TEMP$species)
+DATAF_FILTER.t_TEMP$phylo<-as.factor(DATAF_FILTER.t_TEMP$species)
+DATAF_FILTER.t_TEMP<-data.frame(DATAF_FILTER.t_TEMP,wu.pc_TEMP[,1:2],uu.pc_TEMP[,1:2],jac.pc_TEMP[,1:2],bray.pc_TEMP[,1:2])
+
+
+#subset phylogeny
+FILTER<-(setdiff(TREE$ tip.label,DATAF_FILTER.t_TEMP$SPECIES))
+TREE2<-drop.tip(TREE,FILTER)
+
+```
+
+
+# GLMM on PCoA axes for a subset of tropical species 
+## models fitting
+
+```{r , warning=F, message=F }
+######################################
+#BRAY-CURTIS AX1######################
+######################################
+
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.1bray #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_bc_1_TEMP <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny 
+modelTMB_pcoa_rm_bc_1_TEMP_sp <- glmmTMB(Target.axis~Region_migration_season+diet + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_bc_1_TEMP_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+# print(summary(modelTMB_pcoa_rm_bc_1_TEMP))
+
+
+######################################
+#BRAY-CURTIS AX2######################
+######################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.2bray #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_bc_2_TEMP <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+# print(summary(modelTMB_pcoa_rm_bc_2_TEMP))
+#Without phylogeny 
+modelTMB_pcoa_rm_bc_2_TEMP_sp <- glmmTMB(Target.axis~Region_migration_season+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_bc_2_TEMP_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+######################################
+#Jaccard AX1######################
+######################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.1jac #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_ja_1_TEMP <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+# print(summary(modelTMB_pcoa_rm_ja_1_TEMP))
+#Without phylogeny 
+modelTMB_pcoa_rm_ja_1_TEMP_sp <- glmmTMB(Target.axis~Region_migration_season+diet + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_ja_1_TEMP_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+######################################
+#Jaccard AX2######################
+######################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.2jac #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_ja_2_TEMP <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+# print(summary(modelTMB_pcoa_rm_ja_2_TEMP))
+#Without phylogeny
+modelTMB_pcoa_rm_ja_2_TEMP_sp <- glmmTMB(Target.axis~Region_migration_season+diet + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_ja_2_TEMP_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+##################################
+###Weighted UniFrac AX1#######
+##################################
+ 
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.1wu #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_wu_1_TEMP <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+# print(summary(modelTMB_pcoa_rm_wu_1_TEMP))
+#Without phylogeny 
+modelTMB_pcoa_rm_wu_1_TEMP_sp <- glmmTMB(Target.axis~Region_migration_season+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_wu_1_TEMP_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+##################################
+###Weighted UniFrac AX2#######
+##################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.2wu #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_wu_2_TEMP <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+# print(summary(modelTMB_pcoa_rm_wu_2_TEMP))
+#Without phylogeny 
+modelTMB_pcoa_rm_wu_2_TEMP_sp <- glmmTMB(Target.axis~Region_migration_season+diet + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_wu_2_TEMP_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+##################################
+###UnWeighted UniFrac AX1#######
+##################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.1uu  #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_uu_1_TEMP <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+# print(summary(modelTMB_pcoa_rm_uu_1_TEMP))
+#Without phylogeny
+modelTMB_pcoa_rm_uu_1_TEMP_sp <- glmmTMB(Target.axis~Region_migration_season+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+#Without phylogeny and species
+modelTMB_pcoa_rm_uu_1_TEMP_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+##################################
+###UnWeighted UniFrac AX2#######
+##################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.2uu #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_uu_2_TEMP <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny 
+modelTMB_pcoa_rm_uu_2_TEMP_sp <- glmmTMB(Target.axis~Region_migration_season+diet + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+#Without phylogeny and species
+modelTMB_pcoa_rm_uu_2_TEMP_not <- glmmTMB(Target.axis~Region_migration_season+diet
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+#table with parameter estimates
+DF1_bc_1_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_bc_1_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_bc_1_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_bc_1_TEMP),rep("",2)))
+
+DF1_bc_2_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_bc_2_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_bc_2_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_bc_2_TEMP),rep("",2)))
+
+DF1_ja_1_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_ja_1_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_ja_1_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_ja_1_TEMP),rep("",2)))
+
+DF1_ja_2_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_ja_2_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_ja_2_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_ja_2_TEMP),rep("",2)))
+
+DF1_wu_1_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_wu_1_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_wu_1_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_wu_1_TEMP),rep("",2)))
+
+DF1_wu_2_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_wu_2_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_wu_2_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_wu_2_TEMP),rep("",2)))
+
+DF1_uu_1_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_uu_1_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_uu_1_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_uu_1_TEMP),rep("",2)))
+
+DF1_uu_2_TEMP<-data.frame(Predictor=rownames(summary(modelTMB_pcoa_rm_uu_2_TEMP)$ coefficients$cond),
+                summary(modelTMB_pcoa_rm_uu_2_TEMP)$ coefficients$cond,
+                AIC=c(AIC(modelTMB_pcoa_rm_uu_2_TEMP),rep("",2)))
+
+
+DF_vse_TMB_PCOA_WUUUJABC__TEMP<-data.frame(rbind(DF1_bc_1_TEMP,DF1_ja_1_TEMP,DF1_wu_1_TEMP,DF1_uu_1_TEMP,
+                                                 DF1_bc_2_TEMP,DF1_ja_2_TEMP,DF1_wu_2_TEMP,DF1_uu_2_TEMP))
+DF_vse_TMB_PCOA_WUUUJABC__TEMP<-data.frame(Response=c("BC1",rep("",2),"JA1",rep("",2),"WU1",rep("",2),"UU1",rep("",2),
+                                                      "BC2",rep("",2),"JA2",rep("",2),"WU2",rep("",2),"UU2",rep("",2)),
+                                           DF_vse_TMB_PCOA_WUUUJABC__TEMP)
+
+#ANOVA TABLE
+ANOVA.table<-data.frame(response=c("BC1",rep("",1),"JA1",rep("",1),"WU1",rep("",1),"UU1",rep("",1),
+                                "BC2",rep("",1),"JA2",rep("",1),"WU2",rep("",1),"UU2",rep("",1)),
+                        round(rbind(car::Anova(modelTMB_pcoa_rm_bc_1_TEMP),car::Anova(modelTMB_pcoa_rm_ja_1_TEMP),
+                              car::Anova(modelTMB_pcoa_rm_wu_1_TEMP),car::Anova(modelTMB_pcoa_rm_uu_1_TEMP),
+                              car::Anova(modelTMB_pcoa_rm_bc_2_TEMP),car::Anova(modelTMB_pcoa_rm_ja_2_TEMP),
+                              car::Anova(modelTMB_pcoa_rm_wu_2_TEMP),car::Anova(modelTMB_pcoa_rm_uu_2_TEMP)),4))
+ANOVA.table
+ANOVA.table.TROP<-ANOVA.table
+
+#Table for AIC values
+AIC_tab_pcoa_rm_TEMP_PhySp<-rbind(c(AIC(modelTMB_pcoa_rm_bc_1_TEMP),AIC(modelTMB_pcoa_rm_bc_1_TEMP_sp),AIC(modelTMB_pcoa_rm_bc_1_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_bc_2_TEMP),AIC(modelTMB_pcoa_rm_bc_2_TEMP_sp),AIC(modelTMB_pcoa_rm_bc_2_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_ja_1_TEMP),AIC(modelTMB_pcoa_rm_ja_1_TEMP_sp),AIC(modelTMB_pcoa_rm_ja_1_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_ja_2_TEMP),AIC(modelTMB_pcoa_rm_ja_2_TEMP_sp),AIC(modelTMB_pcoa_rm_ja_2_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_wu_1_TEMP),AIC(modelTMB_pcoa_rm_wu_1_TEMP_sp),AIC(modelTMB_pcoa_rm_wu_1_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_wu_2_TEMP),AIC(modelTMB_pcoa_rm_wu_2_TEMP_sp),AIC(modelTMB_pcoa_rm_wu_2_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_uu_1_TEMP),AIC(modelTMB_pcoa_rm_uu_1_TEMP_sp),AIC(modelTMB_pcoa_rm_uu_1_TEMP_not)),
+                            c(AIC(modelTMB_pcoa_rm_uu_2_TEMP),AIC(modelTMB_pcoa_rm_uu_2_TEMP_sp),AIC(modelTMB_pcoa_rm_uu_2_TEMP_not))
+                            )
+row.names(AIC_tab_pcoa_rm_TEMP_PhySp)<-c("bc_1","bc_2","ja_1","ja_2","wu_1","wu_2","uu_1","uu_2")
+AIC_tab_pcoa_rm_TEMP_PhySp
+```
+
+#Summary table including results for sepatate models on tropical and temerate hosts
+```{r , warning=F, message=F }
+ANOVA.DF<-data.frame(subset=c("Temperate",rep("",dim(ANOVA.table.TEMP)[1]-1),"Tropical",rep("",dim(ANOVA.table.TROP)[1]-1)),
+                     reponse=c(ANOVA.table.TEMP[,1],ANOVA.table.TROP[,1]),
+                     predictor=c(rep("Migration","Diet",dim(ANOVA.table.TEMP)[1]/2),rep("Season","Diet",dim(ANOVA.table.TROP)[1]/2)),
+                     rbind(ANOVA.table.TEMP[,c(3,2,4)],ANOVA.table.TROP[,c(3,2,4)]))
+write.table(ANOVA.DF,file = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/ANOVA.composition.subsets.txt",
+            quote = F,row.names = F,sep="\t")
+ANOVA.DF
+
+```
+
+# GLMM models comparing the effect of season and elevation (for tropical hosts)
+```{r , warning=F, message=F }
+######################################
+#BRAY-CURTIS AX1######################
+######################################
+
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.1bray 
+modelTMB_pcoa_rm_bc_1_S <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+modelTMB_pcoa_rm_bc_1_E <- glmmTMBphylo(Target.axis~Elevation+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+######################################
+#BRAY-CURTIS AX2######################
+######################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.2bray #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_bc_2_S <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+modelTMB_pcoa_rm_bc_2_E <- glmmTMBphylo(Target.axis~Elevation+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+
+######################################
+#Jaccard AX1######################
+######################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.1jac #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_ja_1_S <- glmmTMBphylo(Target.axis~Region_migration_season+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+modelTMB_pcoa_rm_ja_1_E <- glmmTMBphylo(Target.axis~Elevation+diet+ (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+
+######################################
+#Jaccard AX2######################
+######################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.2jac #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_ja_2_S <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+modelTMB_pcoa_rm_ja_2_E <- glmmTMBphylo(Target.axis~Elevation+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+##################################
+###Weighted UniFrac AX1#######
+##################################
+ 
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.1wu #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_wu_1_S <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+modelTMB_pcoa_rm_wu_1_E <- glmmTMBphylo(Target.axis~Elevation+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+
+##################################
+###Weighted UniFrac AX2#######
+##################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.2wu #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_wu_2_S <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+modelTMB_pcoa_rm_wu_2_E <- glmmTMBphylo(Target.axis~Elevation+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+
+##################################
+###UnWeighted UniFrac AX1#######
+##################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.1uu  #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_uu_1_S <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+modelTMB_pcoa_rm_uu_1_E <- glmmTMBphylo(Target.axis~Elevation+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+##################################
+###UnWeighted UniFrac AX2#######
+##################################
+DATAF_FILTER.t_TEMP$Target.axis<-DATAF_FILTER.t_TEMP$Axis.2uu #tady se urcuje osa a ordinance pro kterou se to bude pocitat
+modelTMB_pcoa_rm_uu_2_S <- glmmTMBphylo(Target.axis~Region_migration_season+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+modelTMB_pcoa_rm_uu_2_E <- glmmTMBphylo(Target.axis~Elevation+diet+(1|phylo) + (1|SPECIES)
+                                  , data=DATAF_FILTER.t_TEMP
+                                  , phyloZ=phyloZ
+                                  , phylonm = "phylo"
+                                  , doFit=TRUE
+                                  , dispformula = ~1
+                                  , REML = FALSE
+) 
+
+
+#########AIC for model pairs#######
+
+AIC_elevation<-c(AIC(modelTMB_pcoa_rm_bc_1_E),
+                 AIC(modelTMB_pcoa_rm_bc_2_E), 
+                 AIC(modelTMB_pcoa_rm_ja_1_E), 
+                 AIC(modelTMB_pcoa_rm_ja_2_E), 
+                 AIC(modelTMB_pcoa_rm_wu_1_E), 
+                 AIC(modelTMB_pcoa_rm_wu_2_E), 
+                 AIC(modelTMB_pcoa_rm_uu_1_E), 
+                 AIC(modelTMB_pcoa_rm_uu_2_E))
+
+AIC_season<-c(AIC(modelTMB_pcoa_rm_bc_1_S),
+                 AIC(modelTMB_pcoa_rm_bc_2_S), 
+                 AIC(modelTMB_pcoa_rm_ja_1_S), 
+                 AIC(modelTMB_pcoa_rm_ja_2_S), 
+                 AIC(modelTMB_pcoa_rm_wu_1_S), 
+                 AIC(modelTMB_pcoa_rm_wu_2_S), 
+                 AIC(modelTMB_pcoa_rm_uu_1_S), 
+                 AIC(modelTMB_pcoa_rm_uu_2_S))
+
+
+AIC.matrix<-cbind(AIC_elevation,AIC_season)
+AIC.delta.matrix<-t(apply(AIC.matrix,1,function(x) x-min(x)))
+
+weights.AIC_tab<-t(apply(AIC.delta.matrix,1,function(x) 
+                  (exp( -0.5 *(x-min(x))))/sum(exp( -0.5 *(x-min(x))))))
+DF.AIC<-data.frame(Dissimilarity=rep(c("Bray-Curtis","Jaccard","weighted UniFrac","unweighted UniFrac"),each=2),
+                   Axis=rep(c("PC1","PC2"),4),
+                   AIC_elevation=AIC_elevation,
+                   AIC_weight_elevation=weights.AIC_tab[,1],
+                   AIC_season=AIC_season,
+                   AIC_weight_season=weights.AIC_tab[,2])
+DF.AIC
+
+write.table(DF.AIC,file = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/AIC_elevation_season_betadiversity.txt")
+```
+
+# ASV - level analyses
+
+```{r ,fig.width=20,fig.height=20, warning=F, message=F }
+#selection of ASVs for differential abondance analyzes
+set.seed(456789)
+PH_filtered_OTU<-PH_filtered
+
+SSUMS<-sample_sums(PH_filtered_OTU)
+NSAMPLES<-taxa_sums(transform_sample_counts(PH_filtered_OTU,function(x) ifelse(x>0,1,0)))
+TSUMS<-taxa_sums(PH_filtered_OTU)>499
+KEEP<-names(NSAMPLES)[NSAMPLES>19&TSUMS==T] #just for ASVs with > 500 sqs. and present in > 20 samples
+
+PH_filtered_OTU.rare<-rarefy_even_depth(PH_filtered_OTU)
+PH_filtered_OTU.ABUND<-prune_taxa(taxa_names(PH_filtered_OTU.rare)%in%KEEP,PH_filtered_OTU.rare)
+PH_filtered_OTU.ABUND
+sum(otu_table(PH_filtered_OTU.ABUND))/sum(otu_table(PH_filtered_OTU.rare)) #proportion of reads for the ASVs subset vs. for the whole dataset.
+
+# dataset for analyzes
+DATAF_FILTER<-data.frame(REGION=sample_data(PH_filtered_OTU)$region,
+                         Region_migration_season=sample_data(PH_filtered_OTU)$Region_migration_season,
+                         SPECIES=sample_data(PH_filtered_OTU)$GEN_SPEC,
+                         DIET=sample_data(PH_filtered_OTU)$diet,
+                         SSUMS=log(sample_sums(PH_filtered_OTU)),         
+                         phylo=sample_data(PH_filtered_OTU)$GEN_SPEC)
+
+DATAF_FILTER$Region_migration_season<-as.factor(DATAF_FILTER$Region_migration_season)
+DATAF_FILTER$Region_migration_season<-factor(DATAF_FILTER$Region_migration_season, levels = c("Tropical_Dry","Tropical_Wet","Temperate_Resid.Short","Temperate_Transaharan"))
+
+# lists for outputs
+MODEL_LIST<-list()
+AIC_LIST<-list()
+DEVIANCE_LIST<-list()
+PVAL_LIST<-list()
+
+phyloZ <- phylo.to.Z(TREE)
+PH_filtered_OTU.ABUND<-manage_unassigned(PHYLOSEQ=PH_filtered_OTU.ABUND,UNASS_STRING=NA,ADD="",AFTER=TRUE)
+
+#loop fitting for each ASV relevant glmm models
+for(i in 1:ntaxa(PH_filtered_OTU.ABUND)){
+  # print(i)
+  DATAF_FILTER$Target.otu<-as.numeric(otu_table(PH_filtered_OTU.ABUND)[,i])
+  
+  #phylogeny + species
+  model_genus <- try(glmmTMBphylo(Target.otu~DIET+Region_migration_season+(1|phylo) + (1|SPECIES)
+                                        , data=DATAF_FILTER
+                                        , phyloZ=phyloZ
+                                        , phylonm = "phylo"
+                                        , doFit=TRUE
+                                        , dispformula = ~1
+                                        , REML = FALSE
+                                        , family=nbinom1))
+  #species without phylogeny
+  model_genus_nonphylo <- try(glmmTMB(Target.otu~DIET + Region_migration_season+(1|SPECIES)
+                                        , data=DATAF_FILTER
+                                        , doFit=TRUE
+                                        , dispformula = ~1
+                                        , REML = FALSE
+                                        , family=nbinom1))
+  # model ingnoring the effect og species and phylogeny
+  model_genus_nonSpecies <- try(glmmTMB(Target.otu~DIET+Region_migration_season
+                                        , data=DATAF_FILTER
+                                        , doFit=TRUE
+                                        , dispformula = ~1
+                                        , REML = FALSE
+                                        , family=nbinom1))
+
+    MODEL_LIST[[i]]<-model_genus
+    AIC_LIST[[i]]<-as.numeric(AIC(model_genus,model_genus_nonphylo,model_genus_nonSpecies)$AIC)
+    ANOVA_1<-anova(model_genus,model_genus_nonphylo)
+    ANOVA_2<-anova(model_genus_nonphylo,model_genus_nonSpecies)
+    DEVIANCE_LIST[[i]]<-c(ANOVA_1$Chisq[2],ANOVA_2$Chisq[2])
+    PVAL_LIST[[i]]<-c(ANOVA_1$`Pr(>Chisq)`[2],ANOVA_2$`Pr(>Chisq)`[2])
+}
+
+LIST_ALL_Reg_mig_OTU<-list(MODEL_LIST,AIC_LIST,ANOVA_1,ANOVA_2,DEVIANCE_LIST,PVAL_LIST)
+names(LIST_ALL_Reg_mig_OTU)<-c("MODEL_LIST","AIC_LIST","ANOVA_1","ANOVA_2","DEVIANCE_LIST","PVAL_LIST")
+
+# table with AIC values
+AIC.matrix<-do.call(rbind, AIC_LIST)
+
+#ASVs exhibiting considerable phylogenetic signal
+PHYLO_filter<-AIC.matrix[,2]-AIC.matrix[,1]>2
+PHYLO_filter[is.na(PHYLO_filter)]<-FALSE
+tax_table(PH_filtered_OTU.ABUND)[,5][PHYLO_filter,]
+
+#ASVs exhibiting considerable host species specific signal
+PHYLO_filter<-AIC.matrix[,3]-AIC.matrix[,2]>2
+PHYLO_filter[is.na(PHYLO_filter)]<-FALSE
+tax_table(PH_filtered_OTU.ABUND)[,5][PHYLO_filter,]
+
+# p values comparing models with and without phylogenetic correlations
+PVAL.matrix<-do.call(rbind,  PVAL_LIST)
+PVAL.matrix[is.na(PVAL.matrix)]<-1
+PHYLO_fdr<-p.adjust(PVAL.matrix[,1],"fdr")
+tax_table(PH_filtered_OTU.ABUND)[PHYLO_fdr<0.05,]
+
+#ANOVA table for model predictors (models with phylogenetic correlations) 
+ANOVAs<-list()
+for(i in 1:length(MODEL_LIST)){
+  # print(i)
+  ANOVAs[[i]]<-car::Anova(MODEL_LIST[[i]])
+}
+ANOVAs.matrix<-do.call(rbind, ANOVAs)
+
+#Parameter estimates for models with phylogenetic correlations
+COEFS<-list()
+for(i in 1:length(MODEL_LIST)){
+  SUMMARY<-summary(MODEL_LIST[[i]])
+  COEFS[[i]]<-as.matrix(SUMMARY$coefficients$cond)
+}
+COEFS.matrix<-do.call(rbind, COEFS)
+
+# Matrix for diet
+FILTER<-rep(c(1,0),ntaxa(PH_filtered_OTU.ABUND))
+ANOVAs.matrix<-do.call(rbind, ANOVAs)
+ANOVAs.matrix$`Pr(>Chisq)`[is.na(ANOVAs.matrix$`Pr(>Chisq)`)]<-1
+ANOVAs.matrix<-ANOVAs.matrix[FILTER==1,]
+rownames(ANOVAs.matrix)<-taxa_names(PH_filtered_OTU.ABUND)
+ANOVAs.matrix<-data.frame(ANOVAs.matrix)
+ANOVAs.matrix$OTU<-taxa_names(PH_filtered_OTU.ABUND)
+ANOVAs.matrix$FDR<-p.adjust(ANOVAs.matrix$Pr..Chisq.,method = "fdr")
+ANOVAs.matrix$Predictor<-"Diet"
+ANOVAs.matrix.diet<-ANOVAs.matrix
+sum(ANOVAs.matrix.diet$FDR<0.05) #2 otu se meni s dietou
+
+# matrix for region + migration
+FILTER<-rep(c(0,1),ntaxa(PH_filtered_OTU.ABUND))
+ANOVAs.matrix<-do.call(rbind, ANOVAs)
+ANOVAs.matrix$`Pr(>Chisq)`[is.na(ANOVAs.matrix$`Pr(>Chisq)`)]<-1
+ANOVAs.matrix<-ANOVAs.matrix[FILTER==1,]
+rownames(ANOVAs.matrix)<-taxa_names(PH_filtered_OTU.ABUND)
+ANOVAs.matrix<-data.frame(ANOVAs.matrix)
+ANOVAs.matrix$OTU<-taxa_names(PH_filtered_OTU.ABUND)
+ANOVAs.matrix$FDR<-p.adjust(ANOVAs.matrix$Pr..Chisq.,method = "fdr")
+ANOVAs.matrix$Predictor<-"Diet"
+ANOVAs.matrix.reg.migr<-ANOVAs.matrix
+sum(ANOVAs.matrix.reg.migr$FDR<0.05) #19 otu se meni s reg migr
+FILTER<-ANOVAs.matrix.reg.migr$FDR<0.05 #filter pro signifikantni rozdily
+FILTER.anova<-FILTER
+
+#Tukey letters Matrix
+LET<-list()
+for(i in 1:length(MODEL_LIST)){
+  # print(i)
+  TUK<- glht(MODEL_LIST[[i]],  mcp(Region_migration_season = "Tukey"))
+  LET_ACT<-try(cld(TUK))
+  if(class(LET_ACT)=="try-error"){
+    LET[[i]]<-rep(NA,4)
+  } else {LET[[i]]<- LET_ACT$mcletters$Letters}
+ 
+}
+
+LET.matrix<-do.call(rbind, LET)
+rownames(LET.matrix)<-taxa_names(PH_filtered_OTU.ABUND)
+LET.matrix.sig<-LET.matrix[FILTER,]
+dim(LET.matrix.sig)
+
+
+SIG_Phyloseq<-prune_taxa(taxa_names(PH_filtered_OTU.rare)%in%rownames(LET.matrix.sig),PH_filtered_OTU.rare)
+sum(otu_table(SIG_Phyloseq))/sum(otu_table(PH_filtered_OTU.rare))
+
+#this function extracts significant pair-wise comparissions for tukey post hoc results  
+detect.signif<-function(MATRIX,a,b){
+  SIGNIF<-as.logical()
+  for(i in 1:dim(MATRIX)[1]){
+     INTER<-intersect(strsplit(MATRIX[i,a], "")[[1]],strsplit(MATRIX[i,b], "")[[1]])
+     SIGNIF[i]<-ifelse(length(INTER)==0,TRUE,FALSE)
+  }
+  SIGNIF
+}
+
+
+Dry_wet<-detect.signif(MATRIX = LET.matrix.sig,a=1,b=2)
+Migr_nonmigr<-detect.signif(MATRIX = LET.matrix.sig,a=3,b=4)
+Dry_nonmig<-detect.signif(MATRIX = LET.matrix.sig,a=1,b=3)
+Dry_mig<-detect.signif(MATRIX = LET.matrix.sig,a=1,b=4)
+Wet_nonmig<-detect.signif(MATRIX = LET.matrix.sig,a=2,b=3)
+Wet_mig<-detect.signif(MATRIX = LET.matrix.sig,a=2,b=4)
+
+#Number of significant ASVs for each comparison
+sum(Dry_wet)
+sum(Migr_nonmigr)
+sum(Dry_nonmig)
+sum(Dry_mig)
+sum(Wet_nonmig)
+sum(Wet_mig)
+
+sum((Dry_wet+Migr_nonmigr+Dry_nonmig+Dry_mig+Wet_nonmig+Wet_mig)>0)
+
+#selection of sifnificant ASVs for the purpose of ploting
+DD<-phyloseq_2_GG(which.taxa=rownames(LET.matrix.sig),
+              which.phyloseq=PH_filtered_OTU.ABUND,
+              manage.ussigned=T,
+              unassign.string="")
+DD$NAMES<-paste(DD$OTU,DD$Genus,sep="\n")
+DD$Prop_sq_rt<-(DD$Abundance/DD$Seq.tot)^0.5
+DD$Region_migration_season<-factor(DD$Region_migration_season, levels = c("Tropical_Dry","Tropical_Wet","Temperate_Resid.Short","Temperate_Transaharan"))
+
+#Letters indicating, which differences between host categories for each ASV were significant 
+#(according to Tukey post-hoc tests)
+colnames(LET.matrix.sig)<-c("Tropical_Dry","Tropical_Wet","Temperate_Resid.Short","Temperate_Transaharan")
+LET.matrix.sig.long<-reshape2::melt(LET.matrix.sig)
+names(LET.matrix.sig.long)[1:2]<-c("OTU","Region_migration_season")
+TT<-data.frame(OTU=taxa_names(PH_filtered_OTU.ABUND),tax_table(PH_filtered_OTU.ABUND))
+LET.matrix.sig.long<-join(LET.matrix.sig.long,TT)
+LET.matrix.sig.long$NAMES<-paste(LET.matrix.sig.long$OTU,LET.matrix.sig.long$Genus,sep="\n")
+LET.matrix.sig.long$Prop_sq_rt<-0.9
+
+# relabel host categories
+levels(DD$Region_migration_season)<-c("Tropical (dry s.)","Tropical (rainy s.)","Temperate (resid./short dist. migr.)", "Temperate (trans-Saharan)")
+levels(LET.matrix.sig.long$Region_migration_season)<-c("Tropical (dry s.)","Tropical (rainy s.)","Temperate (resid./short dist. migr.)", "Temperate (trans-Saharan)")
+
+# plot for ASVs that siginificantly varied between host categories (according to Anova + tukey post hoc)
+gg<-ggplot(DD,aes(y = Prop_sq_rt,x=Region_migration_season))+geom_boxplot(outlier.shape = NA)+geom_jitter(alpha=0.3)+
+  geom_text(data = LET.matrix.sig.long,aes(label=value))+theme_bw()+theme(axis.text.x = element_text(angle = 90))+
+  facet_nested_wrap(vars(Phylum,NAMES),ncol =5)
+gg<-gg+ylab("Proportion of reads (sq.rt. trnsformed)")+theme(axis.title.x = element_blank())
+ggsave(gg,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/Diff_abundance.pdf",
+       width = 12,height = 18)
+gg
+
+
+# Plot for the effect of diet (only signficant ASVs)
+SIGNIF<-rownames(ANOVAs.matrix.diet)[ANOVAs.matrix.diet$FDR<0.05]
+DD<-phyloseq_2_GG(which.taxa=SIGNIF,
+              which.phyloseq=PH_filtered_OTU.ABUND,
+              manage.ussigned=T,
+              unassign.string="")
+DD$NAMES<-paste(DD$OTU,DD$Genus,sep="\n")
+DD$Prop_sq_rt<-(DD$Abundance/DD$Seq.tot)^0.5
+DD$Region_migration_season<-factor(DD$Region_migration_season, levels = c("Tropical_Dry","Tropical_Wet","Temperate_Resid.Short","Temperate_Transaharan"))
+
+
+gg<-ggplot(DD,aes(y = Prop_sq_rt,x=diet))+geom_jitter(aes(color=Region_migration_season))+facet_grid(.~NAMES)+theme_bw()
+ggsave(gg,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/Diet_otus_alldata.pdf",
+       width=8,height = 8,units = "cm")
+
+gg
+```
+
+
+##########################################################################
+# Comparission of long distance migrants at wintering vs breeding grounds#
+##########################################################################
+
+
+## 1. Data prepatration
+
+```{r ,fig.width=20, warning=F, message=F }
+Region_migration_season<-sample_data(PH_filtered_migrants)$Region_migration_season
+
+CAT<-as.character()
+for(i in 1:length(Region_migration_season)){
+  if(Region_migration_season[i]=="Temperate_in_tropic"){
+    CAT[i]<-"Tropical_Dry"
+  } else if (regexpr("Tropical",Region_migration_season[i])>0) {
+   CAT[i]<- Region_migration_season[i]
+  } else {CAT[i]<-"Temperate"}
+}
+
+sample_data(PH_filtered_migrants)$Region_migration2<-as.factor(CAT)
+
+# remove wet season 
+TARGET<-unique(sample_data(PH_filtered_migrants)$GEN_SPEC[sample_data(PH_filtered_migrants)$Region_migration_season=="Temperate_in_tropic"])
+sample_data(PH_filtered_migrants)$Migr_captured_in_tropic<-sample_data(PH_filtered_migrants)$GEN_SPEC%in%TARGET
+sample_data(PH_filtered_migrants)$Migr_captured_in_tropic<-ifelse(sample_data(PH_filtered_migrants)$Migr_captured_in_tropic==TRUE,1,0.5)
+sample_data(PH_filtered_migrants)$Species_red<-ifelse(sample_data(PH_filtered_migrants)$species%in%TARGET,sample_data(PH_filtered_migrants)$species,"others")
+sample_data(PH_filtered_migrants)$Species_red<-as.factor(sample_data(PH_filtered_migrants)$Species_red)
+levels(sample_data(PH_filtered_migrants)$Species_red)<-c("others","Phylloscopus trochilus","Sylvia borin")
+sample_data(PH_filtered_migrants)$Species_red<-factor(sample_data(PH_filtered_migrants)$Species_red, levels = c("Phylloscopus trochilus","Sylvia borin","others"))
+sample_data(PH_filtered_migrants)$Species_red2<-sample_data(PH_filtered_migrants)$Species_red
+levels(sample_data(PH_filtered_migrants)$Species_red2)<-c("Phylloscopus troch.", "Sylvia borin","others")
+
+PH_filtered_migrants2<-PH_filtered_migrants
+PH_filtered_migrants2.trans<-transform_sample_counts(PH_filtered_migrants2,function(x) x/sum(x))
+PH_filtered_migrants2.rare<-rarefy_even_depth(PH_filtered_migrants2)
+```
+
+##2. PCoA ordination
+
+```{r warning=F, message=F }
+
+#calculate dissimilarities
+wu<-UniFrac(PH_filtered_migrants2.trans,weighted=T,parallel =T)
+uu<-UniFrac(PH_filtered_migrants2.rare,weighted=F,parallel =T)
+bray<-vegdist(otu_table(PH_filtered_migrants2.trans)^0.5,method="bray")
+jac<-vegdist(data.frame(otu_table(PH_filtered_migrants2.rare)),method="jaccard",binary = T)
+
+#fit ordination
+wu.ord<-ordinate(PH_filtered_migrants2.trans,method="PCoA",distance=wu)
+uu.ord<-ordinate(PH_filtered_migrants2.rare,method="PCoA",distance=uu)
+bray.ord<-ordinate(PH_filtered_migrants2.trans,method="PCoA",distance=bray)
+jac.ord<-ordinate(PH_filtered_migrants2.rare,method="PCoA",distance=jac)
+
+#construction of PCoA plots
+p.wu<-plot_ordination(PH_filtered_migrants2.trans,wu.ord,  type = "samples",
+                      color = "Region_migration2",shape="Species_red2",axes = 1:2)+ggtitle("C) weigted UniFrac")+theme_bw()
+p.uu<-plot_ordination(PH_filtered_migrants2.trans,uu.ord,  type = "samples",
+                      color = "Region_migration2",shape="Species_red2",axes = 1:2)+ggtitle("D) unweigted UniFrac")+theme_bw()
+p.bc<-plot_ordination(PH_filtered_migrants2.trans,bray.ord,  type = "samples",
+                      color = "Region_migration2",shape="Species_red2",axes = 1:2)+ggtitle("A) Bray-Curtis")+theme_bw()
+p.ja<-plot_ordination(PH_filtered_migrants2.trans,jac.ord,  type = "samples",
+                      color = "Region_migration2",shape="Species_red2",axes = 1:2)+ggtitle("B) Jaccard")+theme_bw()
+
+#adjust plotting characters
+p.wu$layers <- p.wu$layers[-1]
+p.uu$layers <- p.uu$layers[-1]
+p.bc$layers <- p.bc$layers[-1]
+p.ja$layers <- p.ja$layers[-1]
+
+p.wu<-p.wu + geom_point(size=2,aes(alpha=Migr_captured_in_tropic))+
+  scale_color_manual(values =c20[1:5])+ 
+  guides(alpha = FALSE)+theme(legend.title = element_blank())
+p.uu<-p.uu + geom_point(size=2,aes(alpha=Migr_captured_in_tropic))+
+  scale_color_manual(values =c20[1:5])+ 
+  guides(alpha = FALSE)+theme(legend.title = element_blank())
+p.bc<-p.bc + geom_point(size=2,aes(alpha=Migr_captured_in_tropic))+
+  scale_color_manual(values =c20[1:5])+ 
+  guides(alpha = FALSE)+theme(legend.title = element_blank())
+p.ja<-p.ja + geom_point(size=2,aes(alpha=Migr_captured_in_tropic))+
+  scale_color_manual(values =c20[1:5])+ 
+  guides(alpha = FALSE)+theme(legend.title = element_blank())
+
+p.wu.s<-SMALL_PLOT(p.wu)
+p.uu.s<-SMALL_PLOT(p.uu)
+p.bc.s<-SMALL_PLOT(p.bc)
+p.ja.s<-SMALL_PLOT(p.ja)
+
+GRID<-ggpubr::ggarrange(p.bc.s,p.ja.s,p.wu.s,p.uu.s,
+                        ncol = 2,nrow = 2,common.legend = T,legend="bottom")
+GRID
+
+ggsave(GRID,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/PCOA_migr.pdf",width = 18,height = 18,unit="cm")
+
+# version2 - without unifrac 
+p.bc.s<-p.bc.s+guides(col=guide_legend(nrow=3,ncol = 1,byrow=T),
+                      shape=guide_legend(nrow=3,ncol = 1,byrow=T))+
+                      scale_color_manual(labels=c("Temperate",
+                                                  "Tropical (dry s.)",
+                                                  "Tropical (rainy s.)"),values =c20[1:4])
+
+p.ja.s<-p.ja.s+guides(col=guide_legend(nrow=3,ncol = 1,byrow=T),
+                      shape=guide_legend(nrow=3,ncol = 1,byrow=T))+
+                      scale_color_manual(labels=c("Temperate",
+                                                  "Tropical (dry s.)",
+                                                  "Tropical (rainy s.)"),values =c20[1:4])
+
+
+GRID.v2<-ggpubr::ggarrange(p.bc.s,p.ja.s,ncol = 1,nrow = 2,common.legend = T,legend="bottom")
+GRID.v2
+
+ggsave(GRID.v2,
+       filename="/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/PCOA_migr_v2.pdf",
+       width = 8,height = 16,unit="cm")
+
+```
+
+
+# Alpha diverstity (plot)
+
+```{r warning=F, message=F }
+DIV<-estimate_richness(PH_filtered_migrants2.rare,measures = c("Observed", "Chao1","Shannon"))
+PD<-pd(data.frame(otu_table(PH_filtered_migrants2.rare)), phy_tree(PH_filtered_migrants2.rare), include.root = TRUE)
+DIV$pd <- PD$PD
+DIV<-data.frame(DIV,sample_data(PH_filtered_migrants2.rare))
+
+DIV$phylo<-as.factor(DIV$species)
+DIV$SPECIES<-as.factor(DIV$species)
+
+# just two target species (Phylloscopus and Sylvia)
+DIV.sub<-DIV[DIV$species%in%TARGET,]
+DIV.sub$species<-gsub("_"," ",DIV.sub$species)
+DIV.sub$Region_migration2<-gsub("Tropical_Dry","tropical (dry s.)",DIV.sub$Region_migration2)
+DIV.sub$Region_migration2<-gsub("Temperate","temperate",DIV.sub$Region_migration2)
+
+
+gg.sh<-ggplot(DIV.sub,aes(y=Shannon,x=Region_migration2))+geom_boxplot(outlier.shape = NA,)+geom_jitter(aes(color=species))+ggtitle("C) Shannon")+theme_bw()
+gg.chao<-ggplot(DIV.sub,aes(y=log10(Chao1),x=Region_migration2))+geom_boxplot(outlier.shape = NA,)+geom_jitter(aes(color=species))+ggtitle("A) Chao1")+theme_bw()
+gg.obs<-ggplot(DIV.sub,aes(y=log10(Observed),x=Region_migration2))+geom_boxplot(outlier.shape = NA,)+geom_jitter(aes(color=species))+ggtitle("A) Observed")+theme_bw()
+gg.pd<-ggplot(DIV.sub,aes(y=log10(pd),x=Region_migration2))+geom_boxplot(outlier.shape = NA,)+geom_jitter(aes(color=species))+ggtitle("B) Phylo. Div.")+theme_bw()
+
+gg.sh.s<-SMALL_PLOT(gg.sh)+theme(legend.title = element_blank())+scale_color_manual(values = c20)
+gg.chao.s<-SMALL_PLOT(gg.chao)+theme(legend.title = element_blank())+scale_color_manual(values = c20)
+gg.obs.s<-SMALL_PLOT(gg.obs)+theme(legend.title = element_blank())+scale_color_manual(values = c20)
+gg.pd.s<-SMALL_PLOT(gg.pd)+theme(legend.title = element_blank())+scale_color_manual(values = c20)
+
+GRID<-ggarrange(gg.chao.s+theme(axis.title.x = element_blank()),
+                gg.obs.s+theme(axis.title.x = element_blank()),
+                gg.pd.s+theme(axis.title.x = element_blank()),
+                gg.sh.s+theme(axis.title.x = element_blank()),
+                ncol = 2,nrow = 2,common.legend = T,legend = "bottom")
+
+GRID
+
+ggsave(GRID,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/DIV_migr.pdf",width = 8,height = 8,unit="cm")
+
+
+# reduced plot version - without chao1
+GRID<-ggarrange(gg.obs.s+theme(axis.title.x = element_blank(),axis.text.x = element_text(angle = 90, hjust = 0)),
+                gg.pd.s+theme(axis.title.x = element_blank(),axis.text.x = element_text(angle = 90, hjust = 0)),
+                gg.sh.s+theme(axis.title.x = element_blank(),axis.text.x = element_text(angle = 90, hjust = 0)),
+                ncol = 3,nrow = 1,common.legend = T,legend = "bottom")
+
+GRID
+
+ggsave(GRID,filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/DIV_migr_v2.pdf",width = 8,height = 8,unit="cm")
+```
+
+# Alpha diversity - glm
+
+glm testing variation in aplha diversity between wintering vs breeding grounds.
+```{r warning=F, message=F }
+#######################################
+#SAMOSTATNA ANALYZA PRO DVA DRUHY######
+#######################################
+
+DIV.sub<-DIV[DIV$species%in%(TARGET),]
+modelTMB.div_sh_sub <- glm(Shannon~SPECIES+Region_migration2, data=DIV.sub)
+modelTMB.div_chao_sub <- glm(log10(Chao1)~SPECIES+Region_migration2, data=DIV.sub)
+modelTMB.div_obs_sub <- glm(log10(Observed)~SPECIES+Region_migration2, data=DIV.sub)
+modelTMB.div_pd_sub <- glm(log10(pd)~SPECIES+Region_migration2, data=DIV.sub)
+
+summary(modelTMB.div_sh_sub)
+summary(modelTMB.div_chao_sub)
+summary(modelTMB.div_obs_sub)
+summary(modelTMB.div_pd_sub)
+
+car::Anova(modelTMB.div_sh_sub)
+car::Anova(modelTMB.div_chao_sub)
+car::Anova(modelTMB.div_obs_sub)
+car::Anova(modelTMB.div_pd_sub)
+```
+
+#Differential abundance analysis (just for sylvia and phylloscopus)
+
+- differential abundance analysis based on DESeq2 package
+```{r , warning=F, message=F }
+library(NMF)
+COL=rev(heat.colors(100))
+
+TWO_SPECIES<-prune_samples(sample_data(PH_filtered_migrants)$Species_red!="others",PH_filtered_migrants)
+TWO_SPECIES.trans<-transform_sample_counts(TWO_SPECIES,function(x) x/sum(x))
+
+diagdds = phyloseq_to_deseq2(TWO_SPECIES, ~ GEN_SPEC+Region_migration2)
+gm_mean = function(x, na.rm=TRUE){  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+geoMeans = apply(counts(diagdds), 1, gm_mean)
+diagdds = estimateSizeFactors(diagdds, geoMeans = geoMeans)
+diagdds = DESeq(diagdds, test="Wald", fitType="parametric")
+res = results(diagdds, cooksCutoff = T)
+res<-data.frame(res,tax_table(TWO_SPECIES))
+sigtab = res[which(res$padj < 0.05), ]
+dim(sigtab)
+
+# heatmap for significant ASVs
+TWO_SPECIES.trans<-transform_sample_counts(TWO_SPECIES.trans,function(x) x/sum(x))
+TWO_SPECIES.trans.sig<-prune_taxa(taxa_names(TWO_SPECIES.trans)%in%rownames(sigtab),TWO_SPECIES.trans)
+TWO_SPECIES.trans.sig<-manage_unassigned(PHYLOSEQ=TWO_SPECIES.trans.sig,UNASS_STRING=NA,ADD="",AFTER=TRUE)
+SIG.DF<-data.frame(otu_table(TWO_SPECIES.trans.sig))
+
+ABU<-t(otu_table(TWO_SPECIES.trans.sig))
+rownames(ABU)<-as.character(tax_table(TWO_SPECIES.trans.sig)[,"Genus"])
+rownames(ABU)<-gsub("endosymbionts","Morganellaceae",rownames(ABU))
+colnames(ABU)<-gsub("Phylloscopus_trochilus_","",colnames(ABU))
+colnames(ABU)<-gsub("Sylvia_borin_","",colnames(ABU))
+colnames(ABU)<-sapply(strsplit(colnames(ABU), "_"), function(x) x[1], simplify=T)
+ABU.ano<-data.frame(Species=sample_data(TWO_SPECIES.trans.sig)$species,
+                    Zone=as.character(sample_data(TWO_SPECIES.trans.sig)$Region_migration2))
+
+ABU.ano$Species<-gsub("_"," ",ABU.ano$Species)
+
+ABU.ano$Zone<-gsub("Tropical_Dry","Tropical (wintering)",ABU.ano$Zone)
+ABU.ano$Zone<-gsub("Temperate","Temperate (breeding)",ABU.ano$Zone)
+names(ABU.ano)[2]<-"Climatic zone"
+aheatmap(ABU,color=COL,Colv=TRUE,Rowv = TRUE,annCol=ABU.ano,
+         annColors =list(c.phylum[1:2],c.phylum[3:4]),fontsize = 8,hclustfun="ward",
+         cexCol=0,
+         filename = "/media/kreising/DATA/data/TROPICAL_TEMPERATE_Birds_2021/RESULTS/heatmap_sylvia_phylloscopus.pdf")
+
+aheatmap(ABU,color=COL,Colv=TRUE,Rowv = TRUE,annCol=ABU.ano,
+         annColors =list(c.phylum[1:2],c.phylum[3:4]),fontsize = 8,hclustfun="ward",cexCol=0)
+```
